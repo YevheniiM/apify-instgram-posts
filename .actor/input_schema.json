@@ -1,0 +1,25 @@
+{
+    "title": "Instagram Scraper Input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "directUrls": {
+            "title": "Instagram Profile URLs",
+            "type": "array",
+            "description": "List of Instagram profile URLs to scrape",
+            "editor": "stringList",
+            "example": [
+                "https://www.instagram.com/instagram/",
+                "https://www.instagram.com/natgeo/"
+            ]
+        },
+        "onlyPostsNewerThan": {
+            "title": "Only Posts Newer Than",
+            "type": "string",
+            "description": "ISO 8601 date string. Only scrape posts newer than this date. Leave empty to scrape all posts.",
+            "editor": "textfield",
+            "example": "2025-01-01T00:00:00Z"
+        }
+    },
+    "required": ["directUrls"]
+}
