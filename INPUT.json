@@ -3,5 +3,9 @@
         "https://www.instagram.com/instagram/",
         "https://www.instagram.com/natgeo/"
     ],
-    "onlyPostsNewerThan": "2025-01-01T00:00:00Z"
+    "onlyPostsNewerThan": "2024-01-01T00:00:00Z",
+    "maxPosts": 50,
+    "includeReels": true,
+    "includeIGTV": true,
+    "includeStories": false
 }

@@ -25,7 +25,9 @@
 		"lint": "eslint",
 		"lint:fix": "eslint --fix",
 		"test": "node test/basic-test.js",
-		"test:basic": "node test/basic-test.js"
+		"test:basic": "node test/basic-test.js",
+		"test:performance": "node test/performance-test.js",
+		"test:all": "npm run test && npm run test:performance"
 	},
 	"author": "It's not you it's me"
 }

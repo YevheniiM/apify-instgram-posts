@@ -2,5 +2,9 @@
     "directUrls": [
         "https://www.instagram.com/apify/"
     ],
-    "onlyPostsNewerThan": "2024-01-01T00:00:00Z"
+    "onlyPostsNewerThan": "2024-01-01T00:00:00Z",
+    "maxPosts": 10,
+    "includeReels": true,
+    "includeIGTV": true,
+    "includeStories": false
 }

@@ -1,12 +1,12 @@
 {
-    "title": "Instagram Scraper Input",
+    "title": "Instagram Post Scraper Input",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "directUrls": {
             "title": "Instagram Profile URLs",
             "type": "array",
-            "description": "List of Instagram profile URLs to scrape",
+            "description": "List of Instagram profile URLs to scrape posts from",
             "editor": "stringList",
             "example": [
                 "https://www.instagram.com/instagram/",
@@ -19,6 +19,36 @@
             "description": "ISO 8601 date string. Only scrape posts newer than this date. Leave empty to scrape all posts.",
             "editor": "textfield",
             "example": "2025-01-01T00:00:00Z"
+        },
+        "maxPosts": {
+            "title": "Maximum Posts Per Profile",
+            "type": "integer",
+            "description": "Maximum number of posts to scrape per profile. Leave empty for unlimited.",
+            "editor": "textfield",
+            "example": 100,
+            "minimum": 1,
+            "maximum": 10000
+        },
+        "includeReels": {
+            "title": "Include Reels",
+            "type": "boolean",
+            "description": "Whether to include Instagram Reels in the scraping",
+            "editor": "checkbox",
+            "default": true
+        },
+        "includeIGTV": {
+            "title": "Include IGTV",
+            "type": "boolean",
+            "description": "Whether to include IGTV videos in the scraping",
+            "editor": "checkbox",
+            "default": true
+        },
+        "includeStories": {
+            "title": "Include Stories",
+            "type": "boolean",
+            "description": "Whether to include Instagram Stories (experimental feature)",
+            "editor": "checkbox",
+            "default": false
         }
     },
     "required": ["directUrls"]
