@@ -182,14 +182,7 @@ npm run lint
 npm run format
 ```
 
-### Testing
 
-#### Run All Tests
-```bash
-npm test                    # Comprehensive functionality tests
-npm run test:basic         # Basic functionality tests
-node test/performance-test.js  # Performance benchmarks
-```
 
 #### Test Coverage
 - **95%+ Test Coverage**: Comprehensive unit tests for all functionality

@@ -1,10 +1,9 @@
 {
     "directUrls": [
-        "https://www.instagram.com/instagram/",
-        "https://www.instagram.com/natgeo/"
+        "https://www.instagram.com/instagram/"
     ],
     "onlyPostsNewerThan": "2024-01-01T00:00:00Z",
-    "maxPosts": 50,
+    "maxPosts": 20,
     "includeReels": true,
     "includeIGTV": true,
     "includeStories": false

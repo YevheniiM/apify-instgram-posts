@@ -8,8 +8,8 @@
 	},
 	"dependencies": {
 		"apify": "^3.2.6",
-		"crawlee": "^3.13.2",
 		"axios": "latest",
+		"crawlee": "^3.13.2",
 		"moment": "latest"
 	},
 	"devDependencies": {
@@ -23,11 +23,7 @@
 		"format": "prettier --write .",
 		"format:check": "prettier --check .",
 		"lint": "eslint",
-		"lint:fix": "eslint --fix",
-		"test": "node test/basic-test.js",
-		"test:basic": "node test/basic-test.js",
-		"test:performance": "node test/performance-test.js",
-		"test:all": "npm run test && npm run test:performance"
+		"lint:fix": "eslint --fix"
 	},
 	"author": "It's not you it's me"
 }
