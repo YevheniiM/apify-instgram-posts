@@ -555,7 +555,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                             if (postData) {
                                 await Dataset.pushData(postData);
                                 postsProcessed++;
-                                log.info(`Saved post ${postData.shortcode} from ${username} (${postData.postType}, ${postData.likesCount} likes)`);
+                                log.info(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
                             }
                         }
 
@@ -829,109 +829,84 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 }
 
 // Function to extract post data from the new GraphQL response structure
+// Adapted to match the specific field requirements from the Instagram Post Scraper Fields Guide
 async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
     try {
-        // Extract basic post information
+        // Extract basic post information (matching required fields)
         const postData = {
-            type: 'post',
-            postType: getPostType(post),
-            username: username,
-            shortcode: post.shortcode,
+            // Core Post Fields - Basic Post Information
             id: post.id,
+            type: getPostType(post), // "Video", "Sidecar", "Image"
+            shortCode: post.shortcode, // Note: using shortCode (camelCase) as specified
             url: `https://www.instagram.com/p/${post.shortcode}/`,
+            timestamp: moment.unix(post.taken_at_timestamp).toISOString(),
 
-            // Media content
-            displayUrl: post.display_url,
-            mediaUrls: [post.display_url],
-
-            // Content metadata
+            // Content Fields
             caption: post.edge_media_to_caption?.edges?.[0]?.node?.text || '',
-            hashtags: [],
-            mentions: [],
-            accessibilityCaption: post.accessibility_caption,
+            alt: post.accessibility_caption || null,
+            hashtags: [], // Will be populated below
+            mentions: [], // Will be populated below
+            sponsors: [], // Will be populated below
 
-            // Engagement metrics
+            // Engagement Metrics
             likesCount: post.edge_media_preview_like?.count || 0,
             commentsCount: post.edge_media_to_comment?.count || 0,
-            viewsCount: post.video_view_count || null,
-            playsCount: post.video_play_count || null,
+            videoViewCount: post.video_view_count || 0,
 
-            // Temporal data
-            takenAt: moment.unix(post.taken_at_timestamp).toISOString(),
-            takenAtTimestamp: post.taken_at_timestamp,
-            scrapedAt: moment().toISOString(),
+            // Media Content
+            displayUrl: post.display_url,
+            images: [post.display_url], // Default to display URL, will be updated for carousels
+            videoUrl: post.video_url || null,
+            videoDuration: post.video_duration ? post.video_duration * 1000 : null, // Convert to milliseconds as specified
+            dimensionsHeight: post.dimensions?.height || 0,
+            dimensionsWidth: post.dimensions?.width || 0,
 
-            // Media properties
-            isVideo: post.is_video || false,
-            hasAudio: post.has_audio || false,
-            dimensions: post.dimensions,
+            // Business/Sponsored Content
+            paidPartnership: post.is_paid_partnership || false,
+            isSponsored: post.is_sponsored_tag || false,
 
-            // Location data
-            location: post.location,
-
-            // Tagged users
-            taggedUsers: [],
-
-            // Post settings
-            commentsDisabled: post.comments_disabled || false,
-            likingDisabled: false,
-            isSponsored: post.is_paid_partnership || false,
-
-            // Scraping metadata
-            profileUrl: originalUrl
+            // Additional metadata for compatibility
+            inputUrl: originalUrl,
+            username: username
         };
 
-        // Handle video content
-        if (post.is_video && post.video_url) {
-            postData.videoUrl = post.video_url;
-            postData.videoDuration = post.video_duration;
-            postData.mediaUrls = [post.video_url];
-        }
-
-        // Handle carousel posts
+        // Handle carousel posts (Sidecar) - extract all images
         if (post.__typename === 'GraphSidecar' && post.edge_sidecar_to_children) {
-            postData.carouselItems = [];
-            postData.mediaUrls = [];
+            const allImages = [];
 
             for (const edge of post.edge_sidecar_to_children.edges) {
                 const item = edge.node;
-                const carouselItem = {
-                    id: item.id,
-                    shortcode: item.shortcode,
-                    displayUrl: item.display_url,
-                    isVideo: item.is_video || false,
-                    videoUrl: item.video_url || null,
-                    videoDuration: item.video_duration || null,
-                    dimensions: item.dimensions,
-                    accessibilityCaption: item.accessibility_caption
-                };
+                allImages.push(item.display_url);
 
-                postData.carouselItems.push(carouselItem);
-                postData.mediaUrls.push(item.display_url);
-
+                // For video items in carousel, also add video URL
                 if (item.is_video && item.video_url) {
-                    postData.mediaUrls.push(item.video_url);
+                    postData.videoUrl = item.video_url; // Use first video found
+                    postData.videoDuration = item.video_duration ? item.video_duration * 1000 : null;
+                    postData.videoViewCount = item.video_view_count || 0;
                 }
             }
+
+            postData.images = allImages;
         }
 
         // Extract hashtags and mentions from caption
         if (postData.caption) {
+            // Extract hashtags (without #)
             postData.hashtags = (postData.caption.match(/#[\w]+/g) || []).map(tag => tag.substring(1));
+
+            // Extract mentions (without @)
             postData.mentions = (postData.caption.match(/@[\w.]+/g) || []).map(mention => mention.substring(1));
         }
 
-        // Extract tagged users if available
+        // Extract sponsors from tagged users (business accounts)
         if (post.edge_media_to_tagged_user?.edges) {
-            postData.taggedUsers = post.edge_media_to_tagged_user.edges.map(edge => ({
-                username: edge.node.user.username,
-                fullName: edge.node.user.full_name,
-                isVerified: edge.node.user.is_verified,
-                position: edge.node.position || { x: 0, y: 0 }
-            }));
+            postData.sponsors = post.edge_media_to_tagged_user.edges
+                .filter(edge => edge.node.user.is_business_account || edge.node.user.is_verified)
+                .map(edge => edge.node.user.username);
         }
 
-        // Extracted post data for ${postData.shortcode}: ${postData.postType}, ${postData.likesCount} likes
+        // Log successful extraction
+        log.info(`Extracted post data for ${postData.shortCode}: ${postData.type}, ${postData.likesCount} likes`);
         return postData;
 
     } catch (error) {
@@ -941,14 +916,20 @@ async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
 }
 
 // Helper functions for data extraction
+// Updated to match the exact post type values specified in the requirements
 function getPostType(post) {
-    if (post.is_video) {
-        if (post.product_type === 'clips') return 'reel';
-        if (post.product_type === 'igtv') return 'igtv';
-        return 'video';
+    // Check for carousel/sidecar posts first
+    if (post.__typename === 'GraphSidecar' || (post.edge_sidecar_to_children?.edges?.length > 1)) {
+        return 'Sidecar';
     }
-    if (post.edge_sidecar_to_children?.edges?.length > 1) return 'carousel';
-    return 'photo';
+
+    // Check for video posts
+    if (post.is_video) {
+        return 'Video';
+    }
+
+    // Default to image
+    return 'Image';
 }
 
 
