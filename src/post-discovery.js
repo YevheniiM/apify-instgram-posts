@@ -258,7 +258,8 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
     const shortcodes = [];
     let hasNextPage = true;
     let endCursor = null;
-    let requestCount = 0;
+    let batchCount = 0; // Track batch number for logging
+    let throttleRetries = 0; // Track throttle-aware session rotations
     const startTime = Date.now();
 
     // Use provided systems or create minimal fallbacks
@@ -371,12 +372,12 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
     log.info(`✅ Successfully obtained user ID: ${userId}, starting post discovery...`);
 
     try {
-        // Step 2: Fetch posts in batches with enhanced retry logic
-        while (hasNextPage && shortcodes.length < maxPosts && requestCount < 20) {
-            requestCount++;
+        // Step 2: Fetch posts in batches with enhanced retry logic and throttle-aware pagination
+        while (hasNextPage && shortcodes.length < maxPosts) { // No artificial request limit - let throttle detection handle stopping
+            batchCount++;
 
             const batchResult = await retryManager.executeWithRetry(async (attempt) => {
-                const batchSize = Math.min(50, maxPosts - shortcodes.length);
+                const batchSize = 12; // Use 12 posts per batch to stay under Instagram's radar (as recommended)
 
                 // Use GET endpoint to sidestep LSD requirement (as per your suggestion)
                 const graphqlUrl = 'https://www.instagram.com/graphql/query/';
@@ -389,7 +390,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                 // Get cookie set for this batch request if available
                 const cookieSet = retryManager.getCurrentCookieSet();
                 if (!cookieSet && activeCookieManager) {
-                    log.warning(`No available cookies for batch ${requestCount} - proceeding without cookies`);
+                    log.warning(`No available cookies for batch ${batchCount} - proceeding without cookies`);
                 }
 
                 // Build GraphQL variables for GET request
@@ -407,7 +408,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
 
                 const fullUrl = `${graphqlUrl}?${params}`;
 
-                log.info(`📡 GraphQL GET batch ${requestCount}: ${batchSize} posts (attempt ${attempt}, no LSD needed)`);
+                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, no LSD needed)`);
 
                 const axios = (await import('axios')).default;
 
@@ -476,7 +477,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                     if (data.data?.user === null) {
                         throw new Error(`Unauthorized access to posts for ${username} - session rotation needed`);
                     }
-                    throw new Error(`Unexpected GraphQL response structure in batch ${requestCount}`);
+                    throw new Error(`Unexpected GraphQL response structure in batch ${batchCount}`);
                 }
 
                 const edges = data.data.user.edge_owner_to_timeline_media.edges;
@@ -487,31 +488,53 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                 // Check for Instagram throttling: if we get very few posts but has_next_page is false,
                 // this might be throttling - rotate session and retry
                 const pageInfo = data.data.user.edge_owner_to_timeline_media.page_info;
-                if (batchShortcodes.length < 5 && !pageInfo.has_next_page && requestCount === 1) {
-                    throw new Error('Possible throttling detected - session rotation needed');
+                if (batchShortcodes.length < 5 && !pageInfo.has_next_page && batchCount === 1) {
+                    log.warning(`Possible throttling detected: only ${batchShortcodes.length} posts returned, has_next_page: ${pageInfo.has_next_page}`);
+                    // Don't throw error, continue with what we got
                 }
 
                 // Return batch results with pagination info
                 return {
                     shortcodes: batchShortcodes,
                     hasNextPage: pageInfo.has_next_page,
-                    endCursor: pageInfo.end_cursor
+                    endCursor: pageInfo.end_cursor,
+                    actualCount: data.data.user.edge_owner_to_timeline_media.count // Include actual count for throttle detection
                 };
 
-            }, `Batch ${requestCount} for ${username}`);
+            }, `Batch ${batchCount} for ${username}`);
 
             // Process batch results
             shortcodes.push(...batchResult.shortcodes);
             hasNextPage = batchResult.hasNextPage;
             endCursor = batchResult.endCursor;
+            const actualCount = batchResult.actualCount; // Get actual count from batch result
 
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            log.info(`⚡ Batch ${requestCount}: +${batchResult.shortcodes.length} posts (total: ${shortcodes.length}/${maxPosts}) [${elapsed}s]`);
+            log.info(`⚡ Batch ${batchCount}: +${batchResult.shortcodes.length} posts (total: ${shortcodes.length}/${maxPosts}) [${elapsed}s]`);
 
-            // Check if we should continue
+            // Check if we should continue - with throttle-aware pagination
             if (!hasNextPage || !endCursor) {
-                log.info(`Reached end of posts for ${username}`);
-                break;
+                // Detect Instagram's soft throttle: has_next_page=false but we haven't got all posts
+                if (shortcodes.length < actualCount && shortcodes.length < maxPosts && throttleRetries < 3) {
+                    throttleRetries++;
+                    log.info(`🚫 Throttled at ${shortcodes.length}/${actualCount} posts, rotating session (retry ${throttleRetries}/3)`);
+
+                    // Retire current session to get new IP + cookies
+                    if (session && typeof session.retire === 'function') {
+                        session.retire();
+                        log.info(`🔄 Session retired, will continue with fresh session`);
+                    }
+
+                    // Continue with same cursor but fresh session (Instagram will allow more posts)
+                    hasNextPage = true; // Force continuation
+                    log.info(`🔄 Continuing pagination with fresh session from cursor: ${endCursor || 'start'}`);
+                } else if (throttleRetries >= 3) {
+                    log.warning(`Profile ${username}: gave up after 3 throttle retries at ${shortcodes.length}/${actualCount} posts`);
+                    break;
+                } else {
+                    log.info(`✅ Reached genuine end of posts for ${username}: ${shortcodes.length}/${actualCount || 'unknown'}`);
+                    break;
+                }
             }
 
             // Smart delay between batches (200-500ms for speed)

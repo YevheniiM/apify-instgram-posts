@@ -23,7 +23,7 @@
         "maxPosts": {
             "title": "Maximum Posts Per Profile",
             "type": "integer",
-            "description": "Maximum number of posts to scrape per profile. Leave empty for unlimited.",
+            "description": "Maximum number of posts to scrape per profile. Leave empty to extract ALL posts from the profile (recommended for complete data extraction).",
             "editor": "number",
             "example": 100,
             "minimum": 1,

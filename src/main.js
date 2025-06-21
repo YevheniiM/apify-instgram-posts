@@ -10,8 +10,22 @@ await Actor.init();
 // Set production logging level
 log.setLevel(log.LEVELS.INFO);
 
-// Get input from Actor
-const input = await Actor.getInput() || {};
+// Get input from Actor or fallback to INPUT.json for local testing
+let input = await Actor.getInput();
+log.info('Actor.getInput() returned:', typeof input, input);
+
+if (!input || typeof input === 'string' || (typeof input === 'object' && !input.directUrls)) {
+    // Fallback to reading INPUT.json directly for local testing
+    try {
+        const fs = await import('fs');
+        const inputJson = fs.readFileSync('./INPUT.json', 'utf8');
+        input = JSON.parse(inputJson);
+        log.info('Using INPUT.json for local testing');
+    } catch (error) {
+        log.error('Failed to read INPUT.json:', error.message);
+        input = {};
+    }
+}
 log.info('Instagram Scraper - Two-Phase Production Architecture:', input);
 
 // Validate input
@@ -101,8 +115,8 @@ const profileCrawler = new CheerioCrawler({
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions,
-    maxRequestRetries: 3, // Production shows max 3 retries in histogram
-    requestHandlerTimeoutSecs: 30,
+    maxRequestRetries: 2, // Reduce retries to prevent duplication
+    requestHandlerTimeoutSecs: 120, // Increase timeout for post discovery phase
     retryOnBlocked: true,
     requestHandler: profileRouter,
     // Enable production statistics logging
@@ -179,10 +193,10 @@ const postCrawler = new CheerioCrawler({
     },
     // AutoscaledPool configuration matching production logs
     autoscaledPoolOptions: {
-        minConcurrency: 1,
+        minConcurrency: 8, // Start with higher concurrency
         maxConcurrency: maxConcurrency, // Scales up to 12
         desiredConcurrency: 10, // Start with moderate concurrency
-        scaleUpStepRatio: 0.1, // Gradual scaling
+        scaleUpStepRatio: 0.2, // Faster scaling up
         scaleDownStepRatio: 0.05, // Conservative scale down
         maybeRunIntervalSecs: 0.5, // Frequent scaling decisions
         loggingIntervalSecs: 60, // Match production logging interval

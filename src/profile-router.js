@@ -94,7 +94,39 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
             return;
         }
 
-        // Method 2: Extract ALL dynamic tokens from current HTML response (Late 2024+ requirement)
+        // Method 2: Extract actual post count from profile HTML
+        let actualPostCount = null;
+        const postCountPatterns = [
+            /"edge_owner_to_timeline_media":{"count":(\d+)/,
+            /"media_count":(\d+)/,
+            /"posts_count":(\d+)/,
+            /(\d+)\s*posts/i,
+            /"count":(\d+),"page_info"/
+        ];
+
+        for (const pattern of postCountPatterns) {
+            const match = htmlContent.match(pattern);
+            if (match) {
+                actualPostCount = parseInt(match[1]);
+                log.info(`Found actual post count: ${actualPostCount} using pattern: ${pattern}`);
+                break;
+            }
+        }
+
+        // Determine target post count: use maxPosts if specified, otherwise use actual count, fallback to unlimited
+        let targetPostCount;
+        if (maxPosts && maxPosts > 0) {
+            targetPostCount = maxPosts;
+            log.info(`Using specified maxPosts limit: ${targetPostCount}`);
+        } else if (actualPostCount && actualPostCount > 0) {
+            targetPostCount = actualPostCount;
+            log.info(`Using actual profile post count: ${targetPostCount} (extracting ALL posts)`);
+        } else {
+            targetPostCount = 1000; // High limit for unlimited extraction
+            log.info(`Could not determine post count, using high limit: ${targetPostCount} for unlimited extraction`);
+        }
+
+        // Method 3: Extract ALL dynamic tokens from current HTML response (Late 2024+ requirement)
         log.info(`🔑 Step 1: Extracting dynamic tokens from ${username} profile HTML`);
 
         // Extract dynamic tokens from response headers and current HTML
@@ -117,8 +149,8 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         log.info(`🔑 Extracted tokens: WWW-Claim="${wwwClaim}", ASBD-ID="${asbdId}", LSD="${lsd ? 'present' : 'MISSING'}"`);
 
-        // Method 3: Use enhanced post discovery with dynamic tokens
-        log.info(`🚀 Step 2: Using enhanced post discovery for ${username} (target: ${maxPosts || 50} posts)`);
+        // Method 4: Use enhanced post discovery with dynamic tokens
+        log.info(`🚀 Step 2: Using enhanced post discovery for ${username} (target: ${targetPostCount} posts)`);
 
         // Create a simple cookie manager interface for the post discovery
         const cookieManager = {
@@ -146,9 +178,9 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
             }
         };
 
-        // Use our enhanced post discovery method with dynamic tokens
+        // Use our enhanced post discovery method with dynamic tokens and calculated target
         const shortcodes = await discoverPosts(username, {
-            maxPosts: maxPosts || 50,
+            maxPosts: targetPostCount,
             methods: ['directapi'], // Use our enhanced direct API method with dynamic tokens
             fallbackToKnown: true
         }, log, session, cookieManager, throttling);
@@ -192,7 +224,9 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
                 username,
                 userId: userId,
                 originalUrl,
-                postCount: shortcodes.length,
+                actualPostCount: actualPostCount,
+                discoveredPostCount: shortcodes.length,
+                targetPostCount: targetPostCount,
                 isPrivate: false, // If we got posts, it's likely public
                 onlyPostsNewerThan,
                 maxPosts,
@@ -205,7 +239,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
                 ...profileInfo
             });
 
-            log.info(`Profile ${username} (ID: ${userId}) has ${profileInfo.postCount} posts discovered. Private: ${profileInfo.isPrivate}`);
+            log.info(`Profile ${username} (ID: ${userId}) - Actual: ${actualPostCount || 'unknown'} posts, Discovered: ${shortcodes.length}/${targetPostCount} posts. Private: ${profileInfo.isPrivate}`);
         }
 
     } catch (error) {

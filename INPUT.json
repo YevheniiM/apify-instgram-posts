@@ -1,9 +1,7 @@
 {
     "directUrls": [
-        "https://www.instagram.com/instagram/"
+        "https://www.instagram.com/evgesh_m/"
     ],
-    "onlyPostsNewerThan": "2024-01-01T00:00:00Z",
-    "maxPosts": 20,
     "includeReels": true,
     "includeIGTV": true,
     "includeStories": false
