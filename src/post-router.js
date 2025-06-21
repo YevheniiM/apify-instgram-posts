@@ -411,11 +411,8 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
 
             const jsonResponse = response.data;
 
-            // Debug: Log the actual response to understand the structure
+            // Log response status for monitoring
             log.info(`🔍 Post ${shortcode} response status: ${response.status}, data keys: ${Object.keys(jsonResponse || {}).join(', ')}`);
-            if (jsonResponse && typeof jsonResponse === 'object') {
-                log.info(`🔍 Post ${shortcode} response preview: ${JSON.stringify(jsonResponse).substring(0, 200)}...`);
-            }
 
             if (jsonResponse.errors) {
                 if (attempt < maxRetries) {

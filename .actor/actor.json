@@ -1,11 +1,13 @@
 {
-	"actorSpecification": 1,
-	"name": "instagram-scraper",
-	"title": "High-Performance Instagram Post Scraper",
-	"description": "Production-ready Instagram post scraper with Direct API method, optimized for high-volume operations processing millions of posts per day.",
-	"version": "1.0",
-	"meta": {
-		"templateId": "js-bootstrap-cheerio-crawler"
-	},
-	"dockerfile": "../Dockerfile"
+    "actorSpecification": 1,
+    "name": "instagram-scraper",
+    "title": "High-Performance Instagram Post Scraper",
+    "description": "Production-ready Instagram post scraper with Direct API method, optimized for high-volume operations processing millions of posts per day.",
+    "version": "1.0",
+    "meta": {
+        "templateId": "js-bootstrap-cheerio-crawler"
+    },
+    "dockerfile": "../Dockerfile",
+    "input": "./input_schema.json",
+    "output": "./output_schema.json"
 }

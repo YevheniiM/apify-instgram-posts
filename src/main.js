@@ -12,7 +12,6 @@ log.setLevel(log.LEVELS.INFO);
 
 // Get input from Actor or fallback to INPUT.json for local testing
 let input = await Actor.getInput();
-log.info('Actor.getInput() returned:', typeof input, input);
 
 if (!input || typeof input === 'string' || (typeof input === 'object' && !input.directUrls)) {
     // Fallback to reading INPUT.json directly for local testing

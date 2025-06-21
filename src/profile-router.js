@@ -25,7 +25,6 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
     try {
         // Use the response from CheerioCrawler (already has session cookies)
         log.info(`Response status: ${response.statusCode}, URL: ${request.url}`);
-        log.info(`HTML content length: ${$.html().length}`);
 
         // Check for login redirect and bootstrap if needed
         const htmlContent = $.html();
@@ -61,8 +60,6 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         } else {
             log.info(`✅ Successfully authenticated! No login redirect detected.`);
         }
-
-        log.info(`HTML preview: ${htmlContent.substring(0, 500)}...`);
 
         // Extract post URLs from the authenticated response
         const postUrls = [];
