@@ -261,4 +261,4 @@ await postCrawler.run(postUrls);
 // The statistics are already logged automatically by CheerioCrawler
 // No need to manually log them again
 
-await Actor.exit();
+// ✅ SAFETY NET: Let Apify end the run naturally to avoid dataset clearing

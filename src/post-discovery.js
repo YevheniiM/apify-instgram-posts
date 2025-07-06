@@ -43,7 +43,8 @@ const IG_CONSTANTS = {
     APP_ID: '936619743392459',   // Public web-client ID
     ASBD_ID_FALLBACK: '129477',  // Fallback ASBD-ID (Instagram now rotates per-session)
     WWW_CLAIM_FALLBACK: '0',     // Fallback WWW-Claim (Instagram now rotates per-session)
-    DOC_ID: SHORTCODE_DOC_ID     // Current doc_id for user posts - updated July 2025
+    SHORTCODE_DOC_ID,            // Keep single-post doc-id for individual post extraction
+    USER_TIMELINE_DOC_ID: '9310670392322965'  // ✅ CRITICAL FIX: User timeline query (not shortcode lookup)
 };
 
 /**
@@ -490,7 +491,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
                 // Build GET URL with query parameters (LSD required since Feb 2025)
                 const params = new URLSearchParams({
-                    doc_id: IG_CONSTANTS.DOC_ID,
+                    doc_id: IG_CONSTANTS.USER_TIMELINE_DOC_ID,  // ✅ CRITICAL FIX: Use timeline doc_id, not shortcode doc_id
                     variables: JSON.stringify(variables),
                     lsd: lsdToken
                 });

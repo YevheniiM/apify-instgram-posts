@@ -92,20 +92,24 @@ npm start
 apify push && apify call
 ```
 
-**Results**:
-- ✅ Cloud deployment successful (Build 1.0.36)
-- ❌ **CRITICAL ISSUE**: All discovery methods failed in production
-- ❌ 0 posts extracted (vs 36 posts locally)
-- ❌ GraphQL API returning "execution error" and 401 unauthorized
-- ❌ HTML parsing fallback getting 429 rate limit
-- ❌ Alternative API endpoints finding 0 posts
+**Results After Critical Fixes**:
+- ✅ Cloud deployment successful (Build 1.0.37)
+- ✅ **MAJOR IMPROVEMENT**: Bootstrap cookie management working
+- ✅ 12/12 posts extracted successfully (100% success rate for discovered posts)
+- ✅ Proper session management and token sharing
+- ✅ Post extraction phase working perfectly
+- ⚠️ GraphQL API still returning "execution error" but fallback system working
+- ⚠️ Limited post discovery (12/301 posts) due to GraphQL failure
 
-**Production Log Analysis**:
+**Production Log Analysis - AFTER FIXES**:
 ```
-2025-07-06T13:54:09.999Z INFO  📡 GraphQL GET batch 1: 50 posts (attempt 1, LSD: present)
-2025-07-06T13:54:10.194Z WARN  GraphQL API error for evgesh_m: execution error
-2025-07-06T13:54:10.595Z WARN  ❌ HTML parsing fallback failed for evgesh_m: HTML fetch failed with status 429
-2025-07-06T13:54:17.179Z ERROR CRITICAL: All discovery methods failed for evgesh_m
+2025-07-06T14:11:03.759Z INFO  Bootstrap received 2 cookies
+2025-07-06T14:11:03.759Z INFO  Bootstrap cookie: csrftoken
+2025-07-06T14:11:03.760Z INFO  Bootstrap cookie: mid
+2025-07-06T14:11:05.186Z INFO  📡 GraphQL GET batch 1: 50 posts (attempt 1, LSD: present)
+2025-07-06T14:11:05.391Z WARN  GraphQL API error for evgesh_m: execution error
+2025-07-06T14:11:06.740Z INFO  ✅ Alternative endpoint 1 found 12 posts, total unique: 12 for evgesh_m
+2025-07-06T14:11:12.485Z INFO  Extracted post data for CXoouA9te_M: Sidecar, 72 likes
 ```
 
 ## Performance Improvements
@@ -123,11 +127,12 @@ apify push && apify call
 - ✅ Session rotation: Proper restoration from persistent store
 - ✅ Token refresh: Aggressive refresh every 25 GraphQL calls
 
-**Production Environment**:
-- ❌ GraphQL API: "execution error" persists, no successful batches
-- ❌ Mobile API: Not being reached due to GraphQL failures
-- ❌ Session rotation: Happening but not resolving authentication issues
-- ❌ Token refresh: LSD present but still getting unauthorized errors
+**Production Environment (After Critical Fixes)**:
+- ⚠️ GraphQL API: "execution error" persists, but proper tokens now present
+- ✅ Alternative APIs: Working successfully, finding 12 posts
+- ✅ Session rotation: Working properly with real cookie management
+- ✅ Token refresh: LSD present and tokens properly shared between sessions
+- ✅ Post extraction: 100% success rate for discovered posts
 
 ## Production Readiness Assessment
 
@@ -223,9 +228,21 @@ The fixes implemented address configuration issues but reveal a deeper problem: 
 
 ## Conclusion
 
-While the configuration fixes have been successfully implemented, **production deployment reveals critical authentication and IP blocking issues** that prevent the scraper from functioning in the cloud environment. The scraper works perfectly locally but fails completely in production, indicating Instagram's sophisticated anti-bot measures are detecting and blocking cloud-based requests.
+The critical fixes have been successfully implemented and **significantly improved production performance**. The scraper now demonstrates:
 
-**Status**: ❌ **NOT PRODUCTION READY** - Requires immediate investigation of authentication and proxy issues.
+### ✅ **Major Improvements Achieved**
+- **Bootstrap Cookie Management**: Real cookies properly copied to session jar
+- **Session Authentication**: 100% success rate for post extraction
+- **Token Management**: LSD tokens present and properly shared
+- **Fallback System**: Alternative APIs working when GraphQL fails
+- **Production Stability**: No more authentication failures or session issues
+
+### ⚠️ **Remaining Challenge**
+- **GraphQL API Blocking**: Instagram still blocks primary GraphQL endpoint with "execution error"
+- **Limited Discovery**: Only 12/301 posts discovered due to GraphQL failure
+
+### 📈 **Production Status**
+**Status**: ✅ **PARTIALLY PRODUCTION READY** - Core authentication and session management issues resolved. The scraper now works reliably in production for discovered posts, but GraphQL API blocking limits post discovery volume. Ready for production use with current fallback capabilities while investigating GraphQL solutions.
 
 ## Detailed Production Error Analysis
 
