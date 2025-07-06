@@ -102,7 +102,10 @@ export async function getFreshLsd(session, log) {
 
 // 🎯 ROBUST LSD RETRIEVAL: Enhanced debugging to see what Instagram actually serves
 export async function fetchFreshLsd(session, log) {
-    // 🔑 Step 1: Prove exactly where it blows up
+    // � Minimal instrumentation to confirm function is called
+    log.debug('[LSD-BOOT] entered fetchFreshLsd');
+
+    // �🔑 Step 1: Prove exactly where it blows up
     try {
         const axiosMod = await import('axios');
         if (!axiosMod?.default) throw new Error('axios import returned undefined');
@@ -178,22 +181,24 @@ export async function fetchFreshLsd(session, log) {
 
 // 🎯 CONVENIENCE FUNCTION: Ensure LSD token is available
 export async function ensureLsdToken(session, log) {
-    const ttlOk = session.userData.lsd && session.userData.lsdUntil > Date.now();
-
-    if (!ttlOk) {
-        log.info('[LSD] cache miss or expired – going to network');
-        await fetchFreshLsd(session, log);
-
-        // FORCE a log even if the fetch failed
-        if (!session.userData.lsd) {
-            log.warning('[LSD] still empty after refresh – injecting dummy token so flow continues');
-            const crypto = await import('crypto');
-            // 🔑 Parallel quick-win: Use base64url format that IG sometimes accepts
-            session.userData.lsd = crypto.randomBytes(20).toString('base64url');  // More realistic length
-            session.userData.lsdUntil = Date.now() + 5*60*1000;                   // 5 min TTL
-            log.debug(`[LSD] dummy token generated: ${session.userData.lsd.slice(0,8)}...`);
-        }
+    // 🔧 CRITICAL FIX: Check both token existence AND expiry
+    if (!session.userData.lsd                     // no token yet
+        || !session.userData.lsdUntil             // never fetched
+        || session.userData.lsdUntil < Date.now() // expired
+    ) {
+        log.debug('[LSD] cache miss or expired – going to network');
+        session.userData.lsd = await fetchFreshLsd(session, log);
+    } else {
+        log.debug(`[LSD] cached token ok – valid for ${Math.round((session.userData.lsdUntil-Date.now())/1000)} s`);
     }
+
+    // 🚑 Quick rollback safety-net: fallback to random token if real extraction failed
+    if (!session.userData.lsd) {
+        const crypto = await import('crypto');
+        session.userData.lsd = crypto.randomBytes(20).toString('base64url');
+        log.warning(`[LSD] injecting placeholder token ${session.userData.lsd.slice(0,8)}…`);
+    }
+
     return session.userData.lsd;
 }
 
