@@ -2,6 +2,7 @@ import { createCheerioRouter, Dataset } from 'crawlee';
 import { Actor } from 'apify';
 import { discoverPosts } from './post-discovery.js';
 import axios from 'axios';
+import crypto from 'crypto';
 
 // Create router for Phase 1: Profile Discovery (production session management)
 export const profileRouter = createCheerioRouter();
@@ -135,6 +136,9 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
             }
             log.info(`✅ Fallback succeeded – user ID for ${username}: ${userId}`);
         }
+
+        // Generate rank_token for mobile API pagination
+        session.userData.rankToken = `${crypto.randomUUID()}_${userId}`;
 
         // Method 2: Extract actual post count from profile HTML
         let actualPostCount = null;

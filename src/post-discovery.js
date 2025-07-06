@@ -445,6 +445,14 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
         while (hasNextPage && shortcodes.length < maxPosts) { // No artificial request limit - let throttle detection handle stopping
             batchCount++;
 
+            // refresh WWW-Claim / ASBD-ID aggressively in prod
+            await retryManager.checkTokenRefresh(username);
+
+            // guarantee we always have an LSD token
+            if (!session.userData.lsd) {
+                session.userData.lsd = await getFreshLsd(session, log) || 'AVqbxe3J_YA';
+            }
+
             const batchResult = await retryManager.executeWithRetry(async (attempt) => {
                 const batchSize = 50; // Increase batch size for better efficiency while staying under Instagram's limits
 
@@ -995,7 +1003,7 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
         }
 
         if (userId) {
-            shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log);
+            shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log, session);
             if (shortcodes.length > 0) {
                 log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
 
@@ -1110,7 +1118,7 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
 }
 
 // Mobile API with pagination support
-async function tryMobileAPIWithPagination(userId, maxPosts, log) {
+async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null) {
     const shortcodes = [];
     let hasNextPage = true;
     let maxId = null;
@@ -1125,8 +1133,9 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log) {
             // Build mobile API URL with pagination
             let apiUrl = `https://i.instagram.com/api/v1/feed/user/${userId}/`;
             const params = new URLSearchParams({
-                count: Math.min(50, maxPosts - shortcodes.length), // Request up to 50 posts per batch
-                ...(maxId && { max_id: maxId }) // Add pagination cursor if available
+                count: Math.min(50, maxPosts - shortcodes.length),
+                rank_token: session.userData?.rankToken,
+                ...(maxId && { max_id: maxId })
             });
             apiUrl += `?${params}`;
 

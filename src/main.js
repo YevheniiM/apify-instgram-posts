@@ -10,6 +10,9 @@ await Actor.init();
 // Set production logging level
 log.setLevel(log.LEVELS.INFO);
 
+// Make sure Cloud run really uses residential IPs
+await Actor.setValue('APIFY_PROXY_GROUPS', ['RESIDENTIAL']);
+
 // Get input from Actor or fallback to INPUT.json for local testing
 let input = await Actor.getInput();
 
@@ -115,10 +118,8 @@ const profileCrawler = new CheerioCrawler({
     persistCookiesPerSession: true,
     sessionPoolOptions,
     // Enhanced production settings for residential proxies
-    requestHandlerTimeoutSecs: 60, // Increased timeout for residential proxy latency
-    maxRequestRetries: 3, // Conservative retry count
-    maxRequestRetries: 2, // Reduce retries to prevent duplication
-    requestHandlerTimeoutSecs: 120, // Increase timeout for post discovery phase
+    requestHandlerTimeoutSecs: 120,
+    maxRequestRetries: 3,
     retryOnBlocked: true,
     requestHandler: profileRouter,
     // Enable production statistics logging
@@ -192,10 +193,8 @@ const postCrawler = new CheerioCrawler({
     persistCookiesPerSession: true,
     sessionPoolOptions,
     // Enhanced production settings for residential proxies
-    requestHandlerTimeoutSecs: 60, // Increased timeout for residential proxy latency
-    maxRequestRetries: 3, // Conservative retry count
-    maxRequestRetries: 3, // Production shows max 3 retries in histogram [239,28,3]
-    requestHandlerTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 60,
+    maxRequestRetries: 3,
     retryOnBlocked: true,
     requestHandler: postRouter,
     // Enable production statistics logging (matching exact format)
