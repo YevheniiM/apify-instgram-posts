@@ -10,8 +10,7 @@ await Actor.init();
 // Set production logging level
 log.setLevel(log.LEVELS.INFO);
 
-// Make sure Cloud run really uses residential IPs
-await Actor.setValue('APIFY_PROXY_GROUPS', ['RESIDENTIAL']);
+// Proxy configuration will be created below
 
 // Get input from Actor or fallback to INPUT.json for local testing
 let input = await Actor.getInput();
@@ -37,10 +36,18 @@ if (!input.directUrls || !Array.isArray(input.directUrls) || input.directUrls.le
 }
 
 // Configure Production Residential Proxies with enhanced settings
-const proxyConfiguration = await Actor.createProxyConfiguration({
-    groups: ['RESIDENTIAL'],
-    countryCode: 'US'
-});
+let proxyConfiguration = null;
+try {
+    proxyConfiguration = await Actor.createProxyConfiguration({
+        groups: ['RESIDENTIAL'], // must be enabled on your account
+        countryCode: 'US'
+    });
+    if (proxyConfiguration) {
+        log.info(`Proxy in use: ${proxyConfiguration.newUrl()}`);
+    }
+} catch (error) {
+    log.warning(`Proxy configuration failed: ${error.message}. Running without proxy.`);
+}
 
 // Production AutoscaledPool configuration (matching logs: scales 1->12+)
 const maxConcurrency = 12; // Production max observed concurrency

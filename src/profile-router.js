@@ -3,6 +3,7 @@ import { Actor } from 'apify';
 import { discoverPosts } from './post-discovery.js';
 import axios from 'axios';
 import crypto from 'crypto';
+import { primeCsrf } from './session-utils.js';
 
 // Create router for Phase 1: Profile Discovery (production session management)
 export const profileRouter = createCheerioRouter();
@@ -86,16 +87,23 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
             log.info(`Bootstrap response status: ${bootstrapResponse.status}`);
 
-            // Extract cookies from bootstrap response
+            // Extract cookies from bootstrap response and copy them into the session
             const setCookieHeaders = bootstrapResponse.headers['set-cookie'] || [];
             log.info(`Bootstrap received ${setCookieHeaders.length} cookies`);
 
-            // The session will automatically persist these cookies for future requests
-            for (const cookieHeader of setCookieHeaders) {
-                const cookieMatch = cookieHeader.match(/^([^=]+)=([^;]+)/);
+            // CRITICAL FIX: Copy bootstrap cookies into Crawlee session
+            for (const raw of setCookieHeaders) {
+                await session.setCookie(raw, 'https://www.instagram.com');
+                const cookieMatch = raw.match(/^([^=]+)=([^;]+)/);
                 if (cookieMatch) {
                     log.info(`Bootstrap cookie: ${cookieMatch[1]}`);
                 }
+            }
+
+            // CRITICAL FIX: Ensure CSRF token is present before GraphQL requests
+            if (!session.getCookieString('https://www.instagram.com').includes('csrftoken=')) {
+                primeCsrf(session);
+                log.info(`🔑 CSRF token primed for session`);
             }
         } else {
             log.info(`✅ Successfully authenticated! No login redirect detected.`);
