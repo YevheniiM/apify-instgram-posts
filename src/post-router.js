@@ -575,10 +575,8 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             // 🎯 CRITICAL: Ensure we have fresh LSD token for this request
             log.info(`🔑 Ensuring LSD token for post ${shortcode}`);
             const { ensureLsdToken } = await import('./session-utils.js');
-            await ensureLsdToken(session, log);
+            const lsdToken = await ensureLsdToken(session, log);
 
-            // 🎯 GRACEFUL EMPTY LSD: Use valid-length token even if extraction failed
-            const lsdToken = session.userData.lsd || '1'.repeat(16); // bogus but valid length
             log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'real' : 'fallback'}" (from profile discovery)`);
 
             // 🎯 PRODUCTION HEADERS: Clean headers that work with IG's current requirements
