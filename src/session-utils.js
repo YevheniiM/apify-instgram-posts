@@ -184,12 +184,3 @@ export async function ensureLsdToken(session, log) {
 export async function getSharedLsd(session, log) {
     return await fetchFreshLsd(session, log);
 }
-
-// Ensure session has valid LSD token before GraphQL calls
-export async function ensureLsdToken(session, log) {
-    if (!session.userData.lsdUntil || session.userData.lsdUntil < Date.now()) {
-        log.debug('🔄 LSD token expired or missing, fetching new one');
-        await getSharedLsd(session, log);
-    }
-    return session.userData.lsd;
-}
