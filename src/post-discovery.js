@@ -17,7 +17,7 @@
 // to avoid circular imports. They are defined in routes.js and post-router.js
 
 import { SHORTCODE_DOC_ID, TIMEOUTS } from './constants.js';
-import { refreshCsrfToken, getFreshLsd } from './session-utils.js';
+import { refreshCsrfToken, ensureLsdToken } from './session-utils.js';
 
 // BEFORE – loose capture, grabs "rum-slate-t" etc.
 // AFTER – *exact* 11-char shortcode & validation helper
@@ -435,7 +435,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
             // guarantee we always have an LSD token
             if (!session.userData.lsd) {
-                session.userData.lsd = await getFreshLsd(session, log) || 'AVqbxe3J_YA';
+                session.userData.lsd = await ensureLsdToken(session, log) || 'AVqbxe3J_YA';
             }
 
             const batchResult = await retryManager.executeWithRetry(async (attempt) => {

@@ -100,62 +100,89 @@ export async function getFreshLsd(session, log) {
     }
 }
 
-// 🎯 ROBUST LSD RETRIEVAL: Fixed to handle IG's new requirements
-export async function getSharedLsd(session, log) {
-    const axios = (await import('axios')).default;
-    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// 🎯 ROBUST LSD RETRIEVAL: Multi-source approach for Instagram's new requirements
+export async function fetchFreshLsd(session, log) {
+    // Check cache first - 10 minute TTL
+    const cacheOK = session.userData.lsdUntil && session.userData.lsdUntil > Date.now();
+    if (cacheOK && session.userData.lsd) {
+        return session.userData.lsd;
+    }
 
-    const cookieStr = session.getCookieString('https://www.instagram.com');
-    const headers = {
-        'User-Agent': UA,
-        'X-IG-App-ID': '936619743392459', // 🎯 CRITICAL: Required for LSD endpoint
-        'Cookie': cookieStr,
-        'Accept': 'application/json, */*'
+    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+    const axios = (await import('axios')).default;
+    const cookie = session.getCookieString('https://www.instagram.com') || '';
+
+    // Helper function to try a request and extract token
+    const tryFetch = async (url, extractor, headers = {}) => {
+        try {
+            const response = await axios.get(url, {
+                headers: { 'User-Agent': UA, Cookie: cookie, ...headers },
+                timeout: 7000,
+                validateStatus: s => s < 500
+            });
+            return extractor(response.data, response.headers);
+        } catch (error) {
+            log.debug(`LSD fetch failed for ${url}: ${error.message}`);
+            return null;
+        }
     };
 
-    try {
-        // 🎯 PRIMARY: Try official LSD endpoint with required headers
-        const url = 'https://www.instagram.com/api/v1/web/get_shared_lsd/?surface=www';
-        const res = await axios.get(url, {
-            headers,
-            timeout: 7000,
-            validateStatus: s => s < 500
-        });
+    let lsd = null;
 
-        if (res.status === 200 && res.data?.lsd?.token) {
-            session.userData.lsd = res.data.lsd.token;
-            session.userData.lsdUntil = Date.now() + 14 * 60 * 1000;
-            log.debug(`✅ New LSD token: ${session.userData.lsd.slice(0, 8)}...`);
-            return session.userData.lsd;
+    // 🎯 METHOD 1: Login page hidden input (most reliable)
+    lsd = await tryFetch(
+        'https://www.instagram.com/accounts/login/',
+        html => {
+            const match = html.match(/name="lsd" value="([^"]+)"/);
+            return match ? match[1] : null;
         }
+    );
 
-        log.warning(`⚠️ LSD endpoint returned ${res.status}, trying HTML fallback`);
-    } catch (error) {
-        log.warning(`⚠️ LSD endpoint failed: ${error.message}, trying HTML fallback`);
+    // 🎯 METHOD 2: Manifest.json with App-ID header
+    if (!lsd) {
+        lsd = await tryFetch(
+            'https://www.instagram.com/data/manifest.json?__a=1&__d=dis',
+            data => data?.lsd,
+            {
+                'X-IG-App-ID': '936619743392459',
+                'Accept': 'application/json'
+            }
+        );
     }
 
-    try {
-        // 🎯 FALLBACK: Extract LSD token from HTML meta tag
-        const html = await axios.get('https://www.instagram.com/', {
-            headers,
-            timeout: 7000
-        });
-
-        const match = html.data.match(/"token":"([A-Za-z0-9-_]{16,})"/);
-        if (match) {
-            session.userData.lsd = match[1];
-            session.userData.lsdUntil = Date.now() + 14 * 60 * 1000;
-            log.debug(`✅ LSD token from HTML: ${session.userData.lsd.slice(0, 8)}...`);
-            return session.userData.lsd;
-        }
-
-        log.warning('⚠️ No LSD token found in HTML');
-    } catch (error) {
-        log.warning(`⚠️ HTML fallback failed: ${error.message}`);
+    // 🎯 METHOD 3: Generic HTML blob fallback
+    if (!lsd) {
+        lsd = await tryFetch(
+            'https://www.instagram.com/',
+            html => {
+                const match = html.match(/"token":"([A-Za-z0-9_-]{16,})"/);
+                return match ? match[1] : null;
+            }
+        );
     }
 
-    log.warning('⚠️ Could not refresh LSD token');
+    if (lsd) {
+        session.userData.lsd = lsd;
+        session.userData.lsdUntil = Date.now() + 10 * 60 * 1000; // 10 min TTL
+        log.debug(`🔑 New LSD token: ${lsd.slice(0, 8)}...`);
+        return lsd;
+    }
+
+    log.warning('⚠️ Could not refresh LSD token - continuing without it');
     return null;
+}
+
+// 🎯 CONVENIENCE FUNCTION: Ensure LSD token is available
+export async function ensureLsdToken(session, log) {
+    if (!session.userData.lsdUntil || session.userData.lsdUntil < Date.now()) {
+        await fetchFreshLsd(session, log);
+    }
+    return session.userData.lsd;
+}
+
+// 🎯 BACKWARD COMPATIBILITY: Keep old function name working
+export async function getSharedLsd(session, log) {
+    return await fetchFreshLsd(session, log);
 }
 
 // Ensure session has valid LSD token before GraphQL calls

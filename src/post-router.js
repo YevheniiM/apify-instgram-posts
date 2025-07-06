@@ -573,11 +573,9 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             const asbdId = userData?.asbdId || '129477';
 
             // 🎯 CRITICAL: Ensure we have fresh LSD token for this request
-            if (!session.userData.lsd || session.userData.lsdUntil < Date.now()) {
-                log.info(`🔑 Fetching LSD token for post ${shortcode}`);
-                const { getSharedLsd } = await import('./session-utils.js');
-                await getSharedLsd(session, log);
-            }
+            log.info(`🔑 Ensuring LSD token for post ${shortcode}`);
+            const { ensureLsdToken } = await import('./session-utils.js');
+            await ensureLsdToken(session, log);
 
             log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'present' : 'missing'}" (from profile discovery)`);
 
