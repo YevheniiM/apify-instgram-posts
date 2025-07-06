@@ -102,6 +102,15 @@ export async function getFreshLsd(session, log) {
 
 // 🎯 ROBUST LSD RETRIEVAL: Enhanced debugging to see what Instagram actually serves
 export async function fetchFreshLsd(session, log) {
+    // 🔑 Step 1: Prove exactly where it blows up
+    try {
+        const axiosMod = await import('axios');
+        if (!axiosMod?.default) throw new Error('axios import returned undefined');
+    } catch (e) {
+        log.error('[LSD-BOOT] early failure *before* first request:', e.stack || e);
+        throw e;          // let caller bubble-up so you always see it
+    }
+
     const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
     const axios = (await import('axios')).default;
     const cookie = session.getCookieString('https://www.instagram.com') || '';
@@ -115,24 +124,47 @@ export async function fetchFreshLsd(session, log) {
 
     for (const src of sources) {
         try {
+            // 🔑 Step 2: Expose network stalls with granular timing
+            log.debug(`[LSD-FETCH] GET ${src.note} → ${src.url}`);
+            const t0 = Date.now();
+
             const resp = await axios.get(src.url, {
                 headers: { 'User-Agent': UA, Cookie: cookie },
-                timeout: 7000,
+                timeout: 20000,  // Increased timeout to confirm proxy stalls
                 validateStatus: s => s < 500
             });
 
+            log.debug(`[LSD-DONE] ${src.note} ${resp.status} in ${Date.now()-t0} ms`);
             log.debug(`[LSD-FETCH] ${src.note} → ${resp.status} / ${resp.headers['content-type']}`);
             log.debug(`[LSD-HEAD]  wClaim=${resp.headers['ig-set-www-claim']}  asbd=${resp.headers['ig-set-asbd-id']}`);
-            log.debug('[LSD-BODY] ' + String(resp.data).slice(0,1024).replace(/\n/g,''));
+            log.debug('[LSD-BODY] ' + String(resp.data).slice(0,2048).replace(/\n/g,''));  // Increased to 2KB
 
             const html = String(resp.data);
-            const rx = /"lsd":\{"token":"([A-Za-z0-9_-]{16,})"/;      // June 2025 format
-            const m  = html.match(rx) || html.match(/name="lsd" value="([^"]+)"/);
+
+            // 🔑 Step 3: Enhanced regex patterns for different LSD formats
+            const patterns = [
+                /"lsd":\{"token":"([A-Za-z0-9_-]{16,})"/,           // June 2025 format
+                /name=["']lsd["']\s+value=["']([^"']{8,})/i,        // Login form with flexible quotes/whitespace
+                /"token":"([A-Za-z0-9_-]{16,})"/,                  // Generic token pattern
+                /name=["']jazoest["']\s+value=["']([^"']{8,})/i     // Alternative field name
+            ];
+
+            let m = null;
+            for (const pattern of patterns) {
+                m = html.match(pattern);
+                if (m) {
+                    log.debug(`✅ LSD token found with pattern: ${pattern.source}`);
+                    break;
+                }
+            }
+
             if (m) {
                 session.userData.lsd = m[1];
                 session.userData.lsdUntil = Date.now() + 10*60*1000;
                 log.info(`[LSD] extracted ${m[1].slice(0,8)}… from ${src.note}`);
                 return m[1];
+            } else {
+                log.debug(`❌ No LSD token found in ${src.note} HTML`);
             }
         } catch (err) {
             log.debug(`[LSD-ERR] ${src.note}: ${err.message}`);
@@ -156,8 +188,10 @@ export async function ensureLsdToken(session, log) {
         if (!session.userData.lsd) {
             log.warning('[LSD] still empty after refresh – injecting dummy token so flow continues');
             const crypto = await import('crypto');
-            session.userData.lsd = crypto.randomBytes(12).toString('base64');  // 16 chars
-            session.userData.lsdUntil = Date.now() + 5*60*1000;                // 5 min TTL
+            // 🔑 Parallel quick-win: Use base64url format that IG sometimes accepts
+            session.userData.lsd = crypto.randomBytes(20).toString('base64url');  // More realistic length
+            session.userData.lsdUntil = Date.now() + 5*60*1000;                   // 5 min TTL
+            log.debug(`[LSD] dummy token generated: ${session.userData.lsd.slice(0,8)}...`);
         }
     }
     return session.userData.lsd;
