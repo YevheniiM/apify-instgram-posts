@@ -33,7 +33,7 @@ if (!input.directUrls || !Array.isArray(input.directUrls) || input.directUrls.le
     await Actor.exit();
 }
 
-// Configure Production Residential Proxies (matching production scraper behavior)
+// Configure Production Residential Proxies with enhanced settings
 const proxyConfiguration = await Actor.createProxyConfiguration({
     groups: ['RESIDENTIAL'],
     countryCode: 'US'
@@ -43,11 +43,11 @@ const proxyConfiguration = await Actor.createProxyConfiguration({
 const maxConcurrency = 12; // Production max observed concurrency
 const minConcurrency = 1;  // Production starts at 1
 
-// Production session pool configuration (following Apify playbook)
+// Production session pool configuration (optimized for residential proxies)
 const sessionPoolOptions = {
-    maxPoolSize: 300, // Production setting from playbook
+    maxPoolSize: 80, // Optimized for residential proxy rotation (from memories: 50-80)
     sessionOptions: {
-        maxUsageCount: 250, // Production setting: 150-300 range
+        maxUsageCount: 20, // Conservative rotation for Instagram (from memories: 20-50 requests)
         maxErrorScore: 3,
         errorScoreDecrement: 0.5
     },
@@ -114,6 +114,9 @@ const profileCrawler = new CheerioCrawler({
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions,
+    // Enhanced production settings for residential proxies
+    requestHandlerTimeoutSecs: 60, // Increased timeout for residential proxy latency
+    maxRequestRetries: 3, // Conservative retry count
     maxRequestRetries: 2, // Reduce retries to prevent duplication
     requestHandlerTimeoutSecs: 120, // Increase timeout for post discovery phase
     retryOnBlocked: true,
@@ -132,11 +135,18 @@ const profileCrawler = new CheerioCrawler({
     failedRequestHandler: async ({ request, error, session }) => {
         log.error(`Profile discovery failed: ${request.url}`, error.message);
 
-        // Production session rotation behavior (matching logs exactly)
+        // Enhanced production session rotation with rate limiting backoff
         if (error.message.includes('blocked') || error.message.includes('403') || error.message.includes('429')) {
             log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Request blocked, retrying it again with different session`);
             log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
             session.retire();
+
+            // Add exponential backoff for rate limiting (production optimization)
+            if (error.message.includes('429')) {
+                const delay = Math.min(30000, 1000 * Math.pow(2, request.retryCount || 0));
+                log.info(`Rate limited - applying exponential backoff: ${delay}ms`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
         } else if (error.message.includes('timeout') || error.message.includes('ECONNRESET')) {
             log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Timeout awaiting 'request' for 30000ms`);
             log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
@@ -181,6 +191,9 @@ const postCrawler = new CheerioCrawler({
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions,
+    // Enhanced production settings for residential proxies
+    requestHandlerTimeoutSecs: 60, // Increased timeout for residential proxy latency
+    maxRequestRetries: 3, // Conservative retry count
     maxRequestRetries: 3, // Production shows max 3 retries in histogram [239,28,3]
     requestHandlerTimeoutSecs: 30,
     retryOnBlocked: true,
@@ -207,11 +220,18 @@ const postCrawler = new CheerioCrawler({
     failedRequestHandler: async ({ request, error, session }) => {
         log.error(`Post extraction failed: ${request.url}`, error.message);
 
-        // Production session rotation behavior (matching logs exactly)
+        // Enhanced production session rotation with rate limiting backoff
         if (error.message.includes('blocked') || error.message.includes('403') || error.message.includes('429')) {
             log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Request blocked, retrying it again with different session`);
             log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
             session.retire();
+
+            // Add exponential backoff for rate limiting (production optimization)
+            if (error.message.includes('429')) {
+                const delay = Math.min(30000, 1000 * Math.pow(2, request.retryCount || 0));
+                log.info(`Rate limited - applying exponential backoff: ${delay}ms`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
         } else if (error.message.includes('timeout') || error.message.includes('ECONNRESET')) {
             log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Timeout awaiting 'request' for 30000ms`);
             log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
