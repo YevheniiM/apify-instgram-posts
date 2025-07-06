@@ -251,3 +251,82 @@ export function buildCookieString(cookieSet) {
         })
         .join('; ');
 }
+
+// 🎯 BACKWARD COMPATIBILITY: Missing functions from old session-utils.js
+export function primeCsrf(session) {
+    if (!session.getCookieString('www.instagram.com').includes('csrftoken')) {
+        session.setCookie({
+            name: 'csrftoken',
+            value: 'missing',
+            domain: '.instagram.com',
+            path: '/',
+        });
+    }
+}
+
+export function validateSessionCookies(session, log) {
+    const cookieString = session.getCookieString('www.instagram.com');
+    const requiredCookies = ['csrftoken', 'sessionid', 'ds_user_id'];
+    const presentCookies = cookieString.split(';').map(c => c.split('=')[0].trim());
+    const missingCookies = requiredCookies.filter(c => !presentCookies.includes(c));
+
+    if (missingCookies.length > 0) {
+        log.warning(`Missing required cookies: ${missingCookies.join(', ')}`);
+        return false;
+    }
+
+    return true;
+}
+
+export function extractCsrfToken(cookieString) {
+    const csrfMatch = cookieString.match(/csrftoken=([^;]+)/);
+    return csrfMatch ? csrfMatch[1] : null;
+}
+
+export async function refreshCsrfToken(session, log) {
+    try {
+        const axios = (await import('axios')).default;
+
+        const response = await axios.get('https://www.instagram.com/', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Cookie': session.getCookieString('https://www.instagram.com')
+            },
+            timeout: 10000,
+            validateStatus: s => s < 500
+        });
+
+        if (response.status === 200 && response.headers['set-cookie']) {
+            const cookies = response.headers['set-cookie'];
+            for (const cookie of cookies) {
+                if (cookie.includes('csrftoken=')) {
+                    const csrfMatch = cookie.match(/csrftoken=([^;]+)/);
+                    if (csrfMatch) {
+                        session.setCookie({
+                            name: 'csrftoken',
+                            value: csrfMatch[1],
+                            domain: '.instagram.com',
+                            path: '/',
+                        });
+                        log.debug(`✅ Refreshed CSRF token: ${csrfMatch[1].slice(0,8)}...`);
+                        return csrfMatch[1];
+                    }
+                }
+            }
+        }
+
+        return null;
+    } catch (error) {
+        log.debug(`CSRF refresh failed: ${error.message}`);
+        return null;
+    }
+}
+
+// Backward compatibility aliases
+export async function getFreshLsd(session, log) {
+    return await fetchFreshLsd(session, log);
+}
+
+export async function getSharedLsd(session, log) {
+    return await fetchFreshLsd(session, log);
+}
