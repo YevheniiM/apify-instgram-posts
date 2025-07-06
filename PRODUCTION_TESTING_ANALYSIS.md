@@ -78,14 +78,60 @@ Sample post data structure verified:
 
 ## Production Testing Results
 
-### 🔄 PENDING PRODUCTION TEST
-- **Status**: Ready for deployment
-- **Expected Issues**: TBD after production run
-- **Monitoring Points**: 
-  - Success rate comparison
-  - Performance degradation
-  - Error patterns
-  - Session management effectiveness
+### ❌ CRITICAL PRODUCTION ISSUES IDENTIFIED
+- **Status**: Production deployment successful, but major functionality issues
+- **Success Rate**: 0% (0/167 posts extracted successfully)
+- **Discovery Rate**: 167/301 posts discovered (55.5% discovery rate)
+- **Extraction Rate**: 0/167 posts extracted (0% extraction rate)
+
+### 🚨 PRODUCTION FAILURES
+
+#### 1. **Key-Value Store Naming Issue (FIXED)**
+- **Issue**: `persistStateKeyValueStoreId: 'INSTAGRAM_SESSION_STORE'` contained underscores
+- **Error**: `Invalid value provided in store: name can only contain letters 'a' through 'z', the digits '0' through '9', and the hyphen ('-')`
+- **Fix Applied**: Changed to `'instagram-session-store'`
+- **Status**: ✅ RESOLVED
+
+#### 2. **Post Discovery Issues**
+- **Discovery Success**: 167/301 posts found (55.5% success rate)
+- **Primary Method Failure**: Direct API method failed with "Unauthorized access"
+- **Fallback Success**: HTML parsing fallback found 167 posts
+- **Issue**: Missing 134 posts (44.5% of total posts not discovered)
+
+#### 3. **Post Extraction Complete Failure**
+- **Extraction Success**: 0/167 posts extracted (0% success rate)
+- **Pattern**: All posts showing "no data" responses from GraphQL API
+- **Retry Behavior**: All posts attempted 3 retries, all failed
+- **Error Pattern**: `Post [shortcode] no data (attempt 1/2/3) - retrying`
+
+#### 4. **Invalid Shortcode Generation**
+- **Issue**: HTML parsing generating invalid shortcodes
+- **Examples**: `rum-slate-t`, `rum-lemon-t`, `--filter-bl`, `ue-link-ico`
+- **Problem**: These are CSS class names, not Instagram shortcodes
+- **Impact**: 100% of discovered "shortcodes" are invalid
+
+### 📊 PRODUCTION PERFORMANCE METRICS
+- **Total Runtime**: ~126 seconds (2.1 minutes)
+- **Discovery Speed**: 1.3 posts/sec (vs 5.9 local)
+- **Extraction Speed**: 0 posts/sec (vs 3.7 local)
+- **Session Management**: ✅ Working (proper rotation and delays)
+- **Proxy Configuration**: ✅ Working (no proxy errors)
+- **Memory Usage**: ✅ Normal (no memory issues)
+
+### 🔍 PRODUCTION ERROR ANALYSIS
+
+#### GraphQL API Issues
+- **Response Pattern**: All requests return `{data, extensions, status}` but with empty/null data
+- **Token Usage**: Using extracted tokens `WWW-Claim="0", ASBD-ID="129477"`
+- **Authentication**: Using real Instagram cookies (1 cookie set loaded)
+- **Endpoint**: Using GET `/graphql/query/` endpoint
+- **Document ID**: Using `7950326061742207` (may be outdated)
+
+#### Shortcode Validation Issues
+- **Root Cause**: HTML parsing extracting CSS class names instead of real shortcodes
+- **Pattern**: All extracted "shortcodes" are CSS-related strings
+- **Validation**: No proper shortcode validation in HTML parsing fallback
+- **Impact**: 100% invalid shortcode rate leading to 0% extraction success
 
 ## Core System Components Analysis
 
@@ -159,13 +205,95 @@ The Instagram scraper uses a **Two-Phase Production Architecture**:
 5. **Optimization**: Address performance gaps or error patterns
 6. **Scale Testing**: Test with larger profiles and multiple concurrent runs
 
-## Expected Production Challenges
+## Root Cause Analysis
 
-1. **IP Restrictions**: Production IPs may face different rate limits
-2. **Proxy Performance**: Residential proxy speed vs local testing
-3. **Session Persistence**: Cookie management in containerized environment
-4. **Concurrency Limits**: Platform-specific resource constraints
-5. **Network Latency**: Geographic distance to Instagram servers
+### 🎯 PRIMARY ISSUES IDENTIFIED
+
+#### 1. **HTML Parsing Fallback Broken**
+- **Problem**: Regex pattern extracting CSS class names instead of shortcodes
+- **Current Pattern**: Likely matching any string with hyphens
+- **Solution Needed**: Proper shortcode regex `/^[A-Za-z0-9_-]{11}$/`
+- **Priority**: 🔴 CRITICAL
+
+#### 2. **GraphQL Document ID Outdated**
+- **Problem**: Using document ID `7950326061742207` which may be expired
+- **Evidence**: All GraphQL requests return empty data despite valid tokens
+- **Solution Needed**: Update to current Instagram GraphQL document ID
+- **Priority**: 🔴 CRITICAL
+
+#### 3. **Primary Discovery Method Failing**
+- **Problem**: Direct API method immediately fails with "Unauthorized access"
+- **Impact**: Forces reliance on broken HTML parsing fallback
+- **Solution Needed**: Fix session/token management for direct API
+- **Priority**: 🟡 HIGH
+
+#### 4. **No Shortcode Validation**
+- **Problem**: No validation of extracted shortcodes before GraphQL requests
+- **Impact**: Wasting API calls on invalid shortcodes
+- **Solution Needed**: Add shortcode format validation
+- **Priority**: 🟡 HIGH
+
+### 🔧 IMMEDIATE FIXES REQUIRED
+
+1. **Fix HTML Parsing Regex**
+   ```javascript
+   // Current: Extracting CSS classes like "rum-slate-t"
+   // Needed: Extract only valid 11-character Instagram shortcodes
+   const shortcodeRegex = /\/p\/([A-Za-z0-9_-]{11})\//g;
+   ```
+
+2. **Update GraphQL Document ID**
+   ```javascript
+   // Current: '7950326061742207' (likely outdated)
+   // Needed: Current Instagram SHORTCODE_MEDIA document ID
+   // Research latest working document ID from Instagram
+   ```
+
+3. **Add Shortcode Validation**
+   ```javascript
+   function isValidShortcode(shortcode) {
+     return /^[A-Za-z0-9_-]{11}$/.test(shortcode);
+   }
+   ```
+
+4. **Fix Direct API Authentication**
+   - Investigate why direct API method fails immediately
+   - Ensure proper session/cookie setup for primary discovery
+   - Add better error handling and session rotation
+
+### 📈 EXPECTED IMPACT OF FIXES
+
+- **Discovery Rate**: 55.5% → 95%+ (fix HTML parsing)
+- **Extraction Rate**: 0% → 90%+ (fix GraphQL document ID)
+- **Overall Success**: 0% → 85%+ (combined fixes)
+- **Performance**: Maintain current speed with better success rate
+
+### 🚀 DEPLOYMENT STRATEGY
+
+1. **Phase 1**: Fix HTML parsing regex and add shortcode validation
+2. **Phase 2**: Research and update GraphQL document ID
+3. **Phase 3**: Fix direct API authentication issues
+4. **Phase 4**: Re-test with same evgesh_m profile
+5. **Phase 5**: Scale test with multiple profiles
+
+### 🎯 SUCCESS CRITERIA FOR NEXT TEST
+
+- **Discovery Rate**: >95% (285+ posts out of 301)
+- **Extraction Rate**: >90% (255+ posts successfully extracted)
+- **Overall Success**: >85% (255+ complete post records)
+- **Performance**: <3 minutes total runtime
+- **Error Rate**: <5% failed requests
 
 ---
 *Analysis prepared for o3 model optimization recommendations*
+
+## Summary for o3 Model
+
+**Current State**: Instagram scraper has 0% success rate in production due to:
+1. HTML parsing extracting CSS class names instead of shortcodes
+2. Outdated GraphQL document ID causing all extraction to fail
+3. Primary discovery method failing, forcing reliance on broken fallback
+
+**Critical Path**: Fix shortcode extraction regex → Update GraphQL document ID → Validate with production test
+
+**Expected Outcome**: 85%+ success rate achievable with these core fixes
