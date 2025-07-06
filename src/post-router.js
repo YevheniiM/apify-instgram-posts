@@ -854,12 +854,17 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
             try {
                 // Fetching post ${shortcode} (attempt ${attempt}/${maxRetries})
 
-                // Use production GraphQL endpoint (matching logs exactly)
-                const graphqlUrl = 'https://www.instagram.com/api/graphql';
-                const graphqlPayload = {
-                    variables: JSON.stringify({ shortcode }),
-                    doc_id: INSTAGRAM_DOCUMENT_IDS.SHORTCODE_MEDIA
-                };
+                // 🎯 PRODUCTION FIX: Use public GraphQL endpoint (GET request, no LSD needed)
+                const graphqlUrl = 'https://www.instagram.com/graphql/query/';
+                const variables = { shortcode };
+
+                // Build GET URL with query parameters (no LSD needed)
+                const params = new URLSearchParams({
+                    doc_id: INSTAGRAM_DOCUMENT_IDS.SHORTCODE_MEDIA,
+                    variables: JSON.stringify(variables)
+                });
+
+                const fullUrl = `${graphqlUrl}?${params}`;
 
                 // Get fresh cookie set for retries if needed
                 const currentCookieSet = attempt === 1 ? cookieSet : cookieManager.getCookiesForRequest();
@@ -890,7 +895,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 // Increase timeout on retries (10s -> 15s -> 20s) for better reliability
                 const timeout = 10000 + (attempt - 1) * 5000;
 
-                const response = await axios.post(graphqlUrl, graphqlPayload, {
+                // Use GET request to public GraphQL endpoint (no LSD needed)
+                const response = await axios.get(fullUrl, {
                     headers: productionHeaders,
                     timeout,
                     validateStatus: () => true,
