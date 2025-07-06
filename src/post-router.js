@@ -459,11 +459,18 @@ export class CookieManager {
     }
 }
 
-// Global cookie manager
-const cookieManager = new CookieManager();
+// 🎯 CRITICAL FIX: Create true singleton instance to prevent multiple cookie factories
+let cookieManagerInstance = null;
 
-// Export for use in other modules
-export { cookieManager };
+function getCookieManager() {
+    if (!cookieManagerInstance) {
+        cookieManagerInstance = new CookieManager();
+    }
+    return cookieManagerInstance;
+}
+
+// Export singleton getter
+export const cookieManager = getCookieManager();
 
 // Production GraphQL endpoint for user posts pagination (from logs)
 async function fetchUserPostsViaGraphQL(userId, after = null, first = 12, log, session) {
@@ -549,13 +556,13 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            // Use GET GraphQL endpoint to avoid LSD requirement (March 2025+ approach)
+            // 🎯 CRITICAL FIX: Use lightweight GET endpoint with correct doc_id and LSD token
             const graphqlUrl = 'https://www.instagram.com/graphql/query/';
             const variables = { shortcode };
 
-            // Build GET URL with query parameters (no LSD needed)
+            // 🎯 FIXED: Use correct shortcode media doc_id (confirmed 2025-07, same as Apify's actor)
             const params = new URLSearchParams({
-                doc_id: INSTAGRAM_DOCUMENT_IDS.SHORTCODE_MEDIA,
+                doc_id: '10015901848480474', // Correct shortcode media doc_id
                 variables: JSON.stringify(variables)
             });
 
@@ -564,6 +571,13 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             // Get dynamic tokens from userData (passed from profile discovery)
             const wwwClaim = userData?.wwwClaim || '0';
             const asbdId = userData?.asbdId || '129477';
+
+            // 🎯 CRITICAL: Ensure we have LSD token for this request
+            if (!session.userData.lsd) {
+                log.info(`🔑 Fetching LSD token for post ${shortcode}`);
+                const { getSharedLsd } = await import('./session-utils.js');
+                await getSharedLsd(session, log);
+            }
 
             log.info(`🔑 Post ${shortcode} using tokens: WWW-Claim="${wwwClaim}", ASBD-ID="${asbdId}" (from profile discovery)`);
 
@@ -576,10 +590,11 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
                 'X-IG-App-ID': '936619743392459', // Required anti-bot header
                 'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
                 'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
+                'X-FB-LSD': session.userData.lsd || '', // 🎯 CRITICAL: Include LSD token
                 'X-Instagram-AJAX': '1',
                 'X-Requested-With': 'XMLHttpRequest',
                 'Cookie': Object.entries(cookieSet.cookies).map(([key, value]) => `${key}=${value}`).join('; '),
-                'Referer': `https://www.instagram.com/${username}/`
+                'Referer': `https://www.instagram.com/p/${shortcode}/` // 🎯 FIXED: Use post-specific referer
             };
 
             const timeout = 10000 + (attempt - 1) * 5000;
@@ -681,11 +696,16 @@ let cookieManagerInitialized = false;
 postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, session }) => {
     const { type, username, originalUrl, onlyPostsNewerThan, maxPosts, includeReels, includeIGTV } = request.userData;
 
-    // Initialize cookie manager if not done
+    // 🎯 CRITICAL FIX: Defensive guard to prevent multiple cookie factory initializations
     if (!cookieManagerInitialized) {
-        await cookieManager.initializeCookies();
+        // Only initialize if not already done
+        if (!cookieManager.cookiePools || cookieManager.cookiePools.size === 0) {
+            await cookieManager.initializeCookies();
+            log.info('Cookie manager initialized for post extraction');
+        } else {
+            log.info('Cookie manager already initialized, reusing existing instance');
+        }
         cookieManagerInitialized = true;
-        log.info('Cookie manager initialized for post extraction');
     }
 
     // Apply smart throttling before request

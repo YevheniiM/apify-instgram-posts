@@ -43,7 +43,9 @@ try {
         countryCode: 'US'
     });
     if (proxyConfiguration) {
-        log.info(`Proxy in use: ${proxyConfiguration.newUrl()}`);
+        // 🎯 FIXED: Await proxy URL to avoid logging [object Promise]
+        const proxyUrl = await proxyConfiguration.newUrl();
+        log.info(`Proxy in use: ${proxyUrl}`);
     }
 } catch (error) {
     log.warning(`Proxy configuration failed: ${error.message}. Running without proxy.`);
@@ -261,4 +263,6 @@ await postCrawler.run(postUrls);
 // The statistics are already logged automatically by CheerioCrawler
 // No need to manually log them again
 
-// ✅ SAFETY NET: Let Apify end the run naturally to avoid dataset clearing
+// 🎯 CRITICAL FIX: Stop the actor cleanly to prevent infinite runtime costs
+log.info('🎉 All done, shutting down');
+await Actor.exit(); // Guarantees container stops billing

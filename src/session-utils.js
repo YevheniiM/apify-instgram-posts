@@ -105,13 +105,15 @@ export async function getSharedLsd(session, log) {
     try {
         const axios = (await import('axios')).default;
 
-        // This endpoint doesn't require auth or special cookies
+        // 🎯 FIX: Use official endpoint that always returns JSON with proper cookies
         const url = 'https://www.instagram.com/api/v1/web/get_shared_lsd/?surface=www';
 
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'X-IG-App-ID': '936619743392459',
+                // 🎯 CRITICAL: Include cookies from session for authenticated LSD request
+                'Cookie': session.getCookieString('https://www.instagram.com')
             },
             timeout: 5000,
             validateStatus: s => s < 500
