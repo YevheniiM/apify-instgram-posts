@@ -137,6 +137,7 @@ class RetryManager {
 
             if (this.session && typeof this.session.retire === 'function') {
                 this.session.retire();
+                this.session.userData = {}; // Clear stale tokens when rotating session
                 this.log.info(`🔄 Session ${this.session.id} retired for ${context}`);
             }
         }
@@ -412,24 +413,27 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                     after: endCursor || null
                 };
 
-                // Build GET URL with query parameters (no LSD needed)
-                const params = new URLSearchParams({
-                    doc_id: IG_CONSTANTS.DOC_ID,
-                    variables: JSON.stringify(variables)
-                });
-
-                const fullUrl = `${graphqlUrl}?${params}`;
-
-                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, no LSD needed)`);
-
                 const axios = (await import('axios')).default;
 
                 // Increase timeout on retries
                 const timeout = 15000 * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
 
                 // Get dynamic tokens from session userData (extracted from bootstrap HTML)
-                const wwwClaim = session.userData?.wwwClaim || IG_CONSTANTS.WWW_CLAIM_FALLBACK;
-                const asbdId = session.userData?.asbdId || IG_CONSTANTS.ASBD_ID_FALLBACK;
+                const { wwwClaim, asbdId, lsd } = session.userData ?? {};
+
+                // Use fallback LSD token if not extracted from HTML
+                const lsdToken = lsd || 'AVqbxe3J_YA';
+
+                // Build GET URL with query parameters (LSD required since Feb 2025)
+                const params = new URLSearchParams({
+                    doc_id: IG_CONSTANTS.DOC_ID,
+                    variables: JSON.stringify(variables),
+                    lsd: lsdToken
+                });
+
+                const fullUrl = `${graphqlUrl}?${params}`;
+
+                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
 
                 const headers = {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -439,6 +443,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                     'X-IG-App-ID': IG_CONSTANTS.APP_ID,
                     'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
                     'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
+                    'X-FB-LSD': lsdToken, // Required since Feb 2025
                     'Referer': `https://www.instagram.com/${username}/`,
                     'Cache-Control': 'no-cache',
                     'Pragma': 'no-cache'
@@ -455,6 +460,10 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                         if (csrfMatch && csrfMatch[1]) {
                             headers['X-CSRFToken'] = csrfMatch[1];
                         }
+
+                        // Debug logging for production troubleshooting
+                        log.debug('GraphQL Request Headers:', JSON.stringify(headers, null, 2));
+                        log.debug('Cookie header:', cookieString?.slice(0, 120));
                     }
                 }
 
@@ -534,6 +543,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
                     // Retire current session to get new IP + cookies
                     if (session && typeof session.retire === 'function') {
                         session.retire();
+                        session.userData = {}; // Clear stale tokens when rotating session
                         log.info(`🔄 Session retired, will continue with fresh session`);
                     }
 
