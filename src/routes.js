@@ -70,12 +70,21 @@ const throttling = new SmartThrottling();
 
 // OPTIMIZATION 2: Advanced Cookie Management with Domain-Specific Support
 class CookieManager {
+    static instance;
+
     constructor() {
+        // Implement singleton pattern to prevent multiple cookie factories
+        if (CookieManager.instance) {
+            return CookieManager.instance;
+        }
+
         this.cookiePools = new Map(); // Multiple cookie sets for rotation
         this.cookieUsage = new Map(); // Track usage per cookie set
         this.cookieExpiry = new Map(); // Track cookie expiration
         this.blockedCookies = new Set(); // Track blocked cookie sets
         this.domainCookies = new Map(); // Domain-specific cookies (www.instagram.com vs i.instagram.com)
+
+        CookieManager.instance = this;
     }
 
     // Initialize cookie pools with domain-specific support and enhanced resilience

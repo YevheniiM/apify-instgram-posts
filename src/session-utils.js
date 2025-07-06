@@ -99,3 +99,46 @@ export async function getFreshLsd(session, log) {
         return null;
     }
 }
+
+// Get shared LSD token the same way the web-app does (production-grade)
+export async function getSharedLsd(session, log) {
+    try {
+        const axios = (await import('axios')).default;
+
+        // This endpoint doesn't require auth or special cookies
+        const url = 'https://www.instagram.com/api/v1/web/get_shared_lsd/?surface=www';
+
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'X-IG-App-ID': '936619743392459',
+            },
+            timeout: 5000,
+            validateStatus: s => s < 500
+        });
+
+        if (response.status === 200 && response.data?.lsd?.token) {
+            // Store for later; good for ±15 min
+            session.userData.lsd = response.data.lsd.token;
+            session.userData.lsdUntil = Date.now() + 14 * 60 * 1000;
+            log.debug(`✅ Shared LSD token obtained: ${response.data.lsd.token.substring(0, 8)}...`);
+            return response.data.lsd.token;
+        }
+
+        log.warning('⚠️ No LSD token in shared endpoint response');
+        return null;
+
+    } catch (error) {
+        log.warning(`⚠️ Shared LSD token fetch failed: ${error.message}`);
+        return null;
+    }
+}
+
+// Ensure session has valid LSD token before GraphQL calls
+export async function ensureLsdToken(session, log) {
+    if (!session.userData.lsdUntil || session.userData.lsdUntil < Date.now()) {
+        log.debug('🔄 LSD token expired or missing, fetching new one');
+        await getSharedLsd(session, log);
+    }
+    return session.userData.lsd;
+}

@@ -484,8 +484,9 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 // Ensure tokens are fresh before making GraphQL calls
                 await cookieManager.ensureFreshTokens(guestCookieSet);
 
-                // Use tokens from guest cookie set (no more hardcoded fallbacks!)
-                const lsdToken = guestCookieSet.lsd || '';
+                // 🎯 FIX: Get real LSD token using production-grade method
+                const { ensureLsdToken } = await import('./session-utils.js');
+                const lsdToken = await ensureLsdToken(session, log) || guestCookieSet.lsd || '';
 
                 // 🔴 CRITICAL: Build POST payload (more reliable than GET for cloud IPs)
                 const payload = new URLSearchParams({

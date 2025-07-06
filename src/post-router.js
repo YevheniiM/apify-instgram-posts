@@ -61,11 +61,20 @@ const throttling = new SmartThrottling();
 
 // Advanced Cookie Management for production-scale scraping
 export class CookieManager {
+    static instance;
+
     constructor() {
+        // Implement singleton pattern to prevent multiple cookie factories
+        if (CookieManager.instance) {
+            return CookieManager.instance;
+        }
+
         this.cookiePools = new Map();
         this.cookieUsage = new Map();
         this.blockedCookies = new Set();
         this.domainCookies = new Map();
+
+        CookieManager.instance = this;
     }
 
     async initializeCookies() {
