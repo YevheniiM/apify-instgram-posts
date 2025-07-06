@@ -44,7 +44,7 @@ const IG_CONSTANTS = {
     ASBD_ID_FALLBACK: '129477',  // Fallback ASBD-ID (Instagram now rotates per-session)
     WWW_CLAIM_FALLBACK: '0',     // Fallback WWW-Claim (Instagram now rotates per-session)
     SHORTCODE_DOC_ID,            // Keep single-post doc-id for individual post extraction
-    USER_TIMELINE_DOC_ID: '9310670392322965'  // ✅ CRITICAL FIX: User timeline query (not shortcode lookup)
+    USER_TIMELINE_DOC_ID: '7950326061742207'  // 🔴 CRITICAL: Updated July 2025 timeline doc_id (was 9310670392322965)
 };
 
 /**
@@ -489,26 +489,26 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 // Use fallback LSD token if not extracted from HTML
                 const lsdToken = lsd || 'AVqbxe3J_YA';
 
-                // Build GET URL with query parameters (LSD required since Feb 2025)
-                const params = new URLSearchParams({
-                    doc_id: IG_CONSTANTS.USER_TIMELINE_DOC_ID,  // ✅ CRITICAL FIX: Use timeline doc_id, not shortcode doc_id
+                // 🔴 CRITICAL: Build POST payload (more reliable than GET for cloud IPs)
+                const payload = new URLSearchParams({
+                    doc_id: IG_CONSTANTS.USER_TIMELINE_DOC_ID,  // ✅ Updated July 2025 timeline doc_id
                     variables: JSON.stringify(variables),
                     lsd: lsdToken
                 });
 
-                const fullUrl = `${graphqlUrl}?${params}`;
-
-                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
+                log.info(`📡 GraphQL POST batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
 
                 const headers = {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
+                    'Content-Type': 'application/x-www-form-urlencoded',
                     'X-Requested-With': 'XMLHttpRequest',
                     'X-IG-App-ID': IG_CONSTANTS.APP_ID,
                     'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
                     'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
                     'X-FB-LSD': lsdToken, // Required since Feb 2025
+                    'X-FB-Friendly-Name': 'PolarisProfileTimelineQuery', // 🟠 P2: Reduces 403s
                     'Referer': `https://www.instagram.com/${username}/`,
                     'Cache-Control': 'no-cache',
                     'Pragma': 'no-cache'
@@ -532,7 +532,8 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                     }
                 }
 
-                const response = await axios.get(fullUrl, {
+                // 🔴 CRITICAL: Use POST instead of GET (more reliable for cloud IPs)
+                const response = await axios.post(graphqlUrl, payload, {
                     headers,
                     timeout,
                     validateStatus: (status) => status < 500 // Handle 4xx errors manually

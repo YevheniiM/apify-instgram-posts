@@ -75,31 +75,29 @@ class CookieManager {
         if (realCookies.length > 0) {
             console.log(`✅ Loaded ${realCookies.length} real Instagram cookie sets`);
             for (const cookieSet of realCookies) {
+                // 🔴 CRITICAL: Fail fast if sessionid is missing
+                if (!cookieSet.cookies.sessionid) {
+                    throw new Error(`❌ CRITICAL: Cookie set ${cookieSet.id} missing sessionid - timeline queries will 401. Please add real Instagram cookies.`);
+                }
                 this.cookiePools.set(cookieSet.id, cookieSet);
             }
         } else {
-            console.log(`⚠️  No real Instagram cookies found. Using placeholder cookies (will likely fail)`);
-            console.log(`📝 To add real cookies, create a file: cookies.json with format:`);
-            console.log(`[{"sessionid": "your_sessionid", "csrftoken": "your_csrftoken", "mid": "your_mid"}]`);
+            // 🔴 CRITICAL: Fail fast if no real cookies found
+            throw new Error(`❌ CRITICAL: No real Instagram cookies found. Timeline queries require sessionid cookie.
+📝 Create cookies.json with format:
+[{
+  "sessionid": "552341234%3AHASH",
+  "ds_user_id": "552341234",
+  "csrftoken": "AKn...xyz",
+  "mid": "ZpL9AQABAAHd7hNTdn...",
+  "ig_did": "C55F5D27-04F0-49A5-9E8F-01D4D197C9EC",
+  "rur": "ATN"
+}]
 
-            // Fallback to placeholder cookies
-            const baseCookies = [
-                {
-                    id: 'cookie_set_1',
-                    cookies: {
-                        'mid': 'ZnK8YwALAAE7UjQ2NDY4NzQ2',
-                        'csrftoken': 'missing',
-                        'ig_did': 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890'
-                    },
-                    usage: 0,
-                    lastUsed: 0,
-                    blocked: false
-                }
-            ];
-
-            for (const cookieSet of baseCookies) {
-                this.cookiePools.set(cookieSet.id, cookieSet);
-            }
+Or set environment variables:
+INSTAGRAM_SESSIONID=your_sessionid
+INSTAGRAM_DS_USER_ID=your_ds_user_id
+INSTAGRAM_CSRFTOKEN=your_csrftoken`);
         }
 
         this.initializeDomainCookies();
@@ -121,23 +119,24 @@ class CookieManager {
                 if (Array.isArray(cookieData)) {
                     for (let i = 0; i < cookieData.length; i++) {
                         const cookies = cookieData[i];
-                        if (cookies.sessionid && cookies.csrftoken) {
+                        // 🔴 CRITICAL: Require sessionid, ds_user_id, and csrftoken for timeline queries
+                        if (cookies.sessionid && cookies.ds_user_id && cookies.csrftoken) {
                             realCookies.push({
                                 id: `real_cookie_set_${i + 1}`,
                                 cookies: {
                                     'sessionid': cookies.sessionid,
+                                    'ds_user_id': cookies.ds_user_id,
                                     'csrftoken': cookies.csrftoken,
                                     'mid': cookies.mid || 'ZnK8YwALAAE7UjQ2NDY4NzQ2',
                                     'ig_did': cookies.ig_did || 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890',
-                                    'ds_user_id': cookies.ds_user_id || '',
-                                    'rur': cookies.rur || '',
-                                    'shbid': cookies.shbid || '',
-                                    'shbts': cookies.shbts || ''
+                                    'rur': cookies.rur || 'ATN'
                                 },
                                 usage: 0,
                                 lastUsed: 0,
                                 blocked: false
                             });
+                        } else {
+                            console.log(`⚠️  Skipping cookie set ${i + 1}: missing required fields (sessionid, ds_user_id, csrftoken)`);
                         }
                     }
                 }
@@ -149,17 +148,21 @@ class CookieManager {
         // Method 2: Try to load from environment variables
         if (realCookies.length === 0) {
             const sessionid = process.env.INSTAGRAM_SESSIONID;
+            const ds_user_id = process.env.INSTAGRAM_DS_USER_ID;
             const csrftoken = process.env.INSTAGRAM_CSRFTOKEN;
             const mid = process.env.INSTAGRAM_MID;
 
-            if (sessionid && csrftoken) {
+            // 🔴 CRITICAL: Require sessionid, ds_user_id, and csrftoken
+            if (sessionid && ds_user_id && csrftoken) {
                 realCookies.push({
                     id: 'env_cookie_set_1',
                     cookies: {
                         'sessionid': sessionid,
+                        'ds_user_id': ds_user_id,
                         'csrftoken': csrftoken,
                         'mid': mid || 'ZnK8YwALAAE7UjQ2NDY4NzQ2',
-                        'ig_did': process.env.INSTAGRAM_IG_DID || 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890'
+                        'ig_did': process.env.INSTAGRAM_IG_DID || 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890',
+                        'rur': process.env.INSTAGRAM_RUR || 'ATN'
                     },
                     usage: 0,
                     lastUsed: 0,
