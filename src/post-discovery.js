@@ -262,7 +262,7 @@ class RetryManager {
 }
 
 // Method 1: High-Speed Direct API with Enhanced Error Handling and Retries
-export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, session, cookieManager = null, throttling = null) {
+export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, session, cookieManager = null, throttling = null, options = {}) {
     log.info(`🚀 High-speed post discovery for ${username} (target: ${maxPosts} posts)`);
 
     const shortcodes = [];
@@ -289,7 +289,9 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
     const retryManager = new RetryManager(log, session, activeCookieManager, activeThrottling);
 
     // Step 1: Get user ID with retry logic
-    const userId = await retryManager.executeWithRetry(async (attempt) => {
+    let userId = options?.prefetchedUserId || null;
+
+    if (!userId) userId = await retryManager.executeWithRetry(async (attempt) => {
         const profileUrl = `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
         // Getting user profile: ${username} (attempt ${attempt})
 
@@ -631,7 +633,7 @@ export async function discoverPosts(username, options = {}, log, session, cookie
 
             switch (method) {
                 case 'directapi':
-                    shortcodes = await discoverPostsWithDirectAPI(username, maxPosts, log, session, cookieManager, throttling);
+                    shortcodes = await discoverPostsWithDirectAPI(username, maxPosts, log, session, cookieManager, throttling, options);
                     break;
                 case 'search':
                     shortcodes = await discoverPostsViaSearch(username, maxPosts, log);
@@ -722,7 +724,7 @@ export async function discoverPosts(username, options = {}, log, session, cookie
                 const retryManager = new RetryManager(log, session, cookieManager, throttling);
                 const directShortcodes = await retryManager.executeWithRetry(async () => {
                     // Try with reduced batch size and different approach
-                    return await discoverPostsWithDirectAPI(username, Math.min(maxPosts, 20), log, session, cookieManager, throttling);
+                    return await discoverPostsWithDirectAPI(username, Math.min(maxPosts, 20), log, session, cookieManager, throttling, options);
                 }, `Direct API retry for ${username}`);
 
                 if (directShortcodes.length > 0) {

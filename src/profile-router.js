@@ -1,12 +1,51 @@
 import { createCheerioRouter, Dataset } from 'crawlee';
 import { Actor } from 'apify';
 import { discoverPosts } from './post-discovery.js';
+import axios from 'axios';
 
 // Create router for Phase 1: Profile Discovery (production session management)
 export const profileRouter = createCheerioRouter();
 
 // Production Instagram constants (from Apify playbook)
 const IG_APP_ID = '936619743392459'; // Public web-app identifier
+
+// Mobile endpoint gives JSON even when the web HTML is stripped
+const MOBILE_PROFILE_API = 'https://i.instagram.com/api/v1/users/web_profile_info/?username=';
+
+/**
+ * Returns user-id or null.  Automatically obeys the session / proxy setup.
+ */
+export async function getUserIdViaAPI(username, session, log) {
+    try {
+        const headers = {
+            'User-Agent': 'Instagram 300.0.0.0 iOS',            // <- mobile UA avoids 403
+            'X-IG-App-ID': '936619743392459',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': '*/*',
+        };
+
+        // Use the crawler's proxy & cookies
+        const cookieString = session.getCookieString('https://www.instagram.com');
+        if (cookieString) headers.Cookie = cookieString;
+
+        const resp = await axios.get(`${MOBILE_PROFILE_API}${username}`, {
+            headers,
+            proxy: false,                      // proxy is already injected by Cheerio
+            timeout: 10000,
+            validateStatus: s => s < 500,
+        });
+
+        if (resp.status !== 200 || !resp.data?.data?.user?.id) {
+            log.debug(`API fallback status ${resp.status} for ${username}`);
+            return null;
+        }
+        return resp.data.data.user.id;
+
+    } catch (err) {
+        log.debug(`API fallback error for ${username}: ${err.message}`);
+        return null;
+    }
+}
 
 // Profile discovery handler - uses production session management
 profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, session }) => {
@@ -87,8 +126,14 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         }
 
         if (!userId) {
-            log.warning(`Could not extract user ID for ${username}`);
-            return;
+            // ⬇ NEW: try API fallback instead of quitting
+            log.warning(`Could not extract user ID for ${username} in HTML – trying API fallback`);
+            userId = await getUserIdViaAPI(username, session, log);
+            if (!userId) {
+                log.error(`❌ User ID fallback failed for ${username} – profile will be skipped`);
+                return;
+            }
+            log.info(`✅ Fallback succeeded – user ID for ${username}: ${userId}`);
         }
 
         // Method 2: Extract actual post count from profile HTML
@@ -137,7 +182,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         // Extract all three required tokens
         const wwwClaim = wwwClaimHeader || wwwClaimMeta || '0';
         const asbdId = asbdIdHeader || '129477';
-        const lsd = lsdInput || lsdHeader || null; // LSD is critical - no fallback
+        const lsd = lsdInput || lsdHeader || null; // fine if null for public scraping
 
         // Store tokens in session userData for GraphQL requests
         session.userData.wwwClaim = wwwClaim;
@@ -179,7 +224,8 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         const shortcodes = await discoverPosts(username, {
             maxPosts: targetPostCount,
             methods: ['directapi'], // Use our enhanced direct API method with dynamic tokens
-            fallbackToKnown: true
+            fallbackToKnown: true,
+            prefetchedUserId: userId
         }, log, session, cookieManager, throttling);
 
         log.info(`✅ Enhanced discovery found ${shortcodes.length} posts for ${username}`);
