@@ -319,7 +319,7 @@ class RetryManager {
 }
 
 // Method 1: High-Speed Direct API with Enhanced Error Handling and Retries
-export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, session, cookieManager = null, throttling = null, options = {}) {
+export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log, session, cookieManager = null, throttling = null, options = {}) {
     log.info(`🚀 High-speed post discovery for ${username} (target: ${maxPosts} posts)`);
 
     const shortcodes = [];
@@ -705,7 +705,7 @@ export async function discoverPostsViaThirdParty(username, _maxPosts = 12, log) 
 // Enhanced main discovery function with comprehensive fallbacks and 100% success guarantee
 export async function discoverPosts(username, options = {}, log, session, cookieManager = null, throttling = null) {
     const {
-        maxPosts = 100,
+        maxPosts = 10000,
         methods = ['directapi', 'search', 'graph'], // Production methods: directapi, search, graph, thirdparty
         fallbackToKnown = true // Enable fallbacks by default for 100% success rate
     } = options;
@@ -967,7 +967,7 @@ export async function discoverPostsViaHTMLParsing(username, maxPosts = 12, log) 
 }
 
 // Enhanced Fallback Method: Alternative API Endpoints with Pagination Support
-export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, log, session) {
+export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000, log, session) {
     log.info(`🔄 Fallback 3: Alternative API endpoints for ${username} (target: ${maxPosts} posts)`);
 
     let shortcodes = [];
@@ -998,20 +998,33 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, lo
             shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log);
             if (shortcodes.length > 0) {
                 log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
-                return shortcodes;
+
+                // If we didn't get all posts, try to supplement with other endpoints
+                if (shortcodes.length < maxPosts) {
+                    log.info(`🔄 Mobile API got ${shortcodes.length}/${maxPosts} posts, trying additional endpoints for complete coverage`);
+                } else {
+                    return shortcodes; // We got all requested posts
+                }
             }
         }
     } catch (error) {
         log.debug(`Mobile API failed: ${error.message}`);
     }
 
-    // Fallback to web profile info endpoints
+    // Try additional endpoints to supplement mobile API results
     const alternativeEndpoints = [
-        // Alternative endpoint 1: Different Instagram API
+        // Alternative endpoint 1: Web profile info API
         `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-        // Alternative endpoint 2: Mobile API endpoint
-        `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`
+        // Alternative endpoint 2: Mobile profile info API
+        `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+        // Alternative endpoint 3: Try with user ID if available
+        ...(userId ? [`https://i.instagram.com/api/v1/users/${userId}/info/`] : []),
+        // Alternative endpoint 4: Different mobile feed endpoint
+        ...(userId ? [`https://i.instagram.com/api/v1/feed/user/${userId}/?count=200`] : [])
     ];
+
+    // Combine results from mobile API and alternative endpoints
+    let combinedShortcodes = [...shortcodes]; // Start with mobile API results
 
     for (const [index, endpoint] of alternativeEndpoints.entries()) {
         try {
@@ -1071,18 +1084,18 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, lo
                     posts = response.data.items.map(item => ({ node: { shortcode: item.code } }));
                 }
 
-                // Extract shortcodes
+                // Extract shortcodes and combine with existing results
                 for (const post of posts) {
                     const shortcode = post.node?.shortcode || post.shortcode || post.code;
-                    if (shortcode && !shortcodes.includes(shortcode)) {
-                        shortcodes.push(shortcode);
-                        if (shortcodes.length >= maxPosts) break;
+                    if (shortcode && !combinedShortcodes.includes(shortcode)) {
+                        combinedShortcodes.push(shortcode);
+                        if (combinedShortcodes.length >= maxPosts) break;
                     }
                 }
 
-                if (shortcodes.length > 0) {
-                    log.info(`✅ Alternative endpoint ${index + 1} found ${shortcodes.length} posts for ${username}`);
-                    break; // Success, no need to try other endpoints
+                if (posts.length > 0) {
+                    log.info(`✅ Alternative endpoint ${index + 1} found ${posts.length} posts, total unique: ${combinedShortcodes.length} for ${username}`);
+                    // Don't break - try all endpoints to get maximum coverage
                 }
             }
 
@@ -1092,8 +1105,8 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, lo
         }
     }
 
-    log.info(`Alternative API endpoints found ${shortcodes.length} posts for ${username}`);
-    return shortcodes.slice(0, maxPosts);
+    log.info(`Alternative API endpoints found ${combinedShortcodes.length} total unique posts for ${username}`);
+    return combinedShortcodes.slice(0, maxPosts);
 }
 
 // Mobile API with pagination support
@@ -1105,7 +1118,7 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log) {
 
     const axios = (await import('axios')).default;
 
-    while (hasNextPage && shortcodes.length < maxPosts && batchCount < 10) { // Limit to 10 batches for safety
+    while (hasNextPage && shortcodes.length < maxPosts && batchCount < 50) { // Increased limit to support large profiles
         batchCount++;
 
         try {
@@ -1150,11 +1163,16 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log) {
                 hasNextPage = data.more_available && data.next_max_id;
                 maxId = data.next_max_id;
 
-                log.debug(`Mobile API batch ${batchCount}: found ${data.items.length} posts, total: ${shortcodes.length}/${maxPosts}`);
+                log.info(`Mobile API batch ${batchCount}: found ${data.items.length} posts, total: ${shortcodes.length}/${maxPosts}, more_available: ${data.more_available}, has_next_id: ${!!data.next_max_id}`);
 
                 if (data.items.length === 0) {
-                    log.debug(`Mobile API batch ${batchCount} returned no posts - stopping pagination`);
+                    log.info(`Mobile API batch ${batchCount} returned no posts - stopping pagination`);
                     break;
+                }
+
+                // If we're not getting more posts but haven't reached the target, log it
+                if (!hasNextPage && shortcodes.length < maxPosts) {
+                    log.info(`Mobile API reached end: ${shortcodes.length}/${maxPosts} posts (more_available: ${data.more_available})`);
                 }
             } else {
                 log.debug(`Mobile API batch ${batchCount} returned unexpected structure`);
