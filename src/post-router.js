@@ -60,7 +60,7 @@ class SmartThrottling {
 const throttling = new SmartThrottling();
 
 // Advanced Cookie Management for production-scale scraping
-class CookieManager {
+export class CookieManager {
     constructor() {
         this.cookiePools = new Map();
         this.cookieUsage = new Map();
@@ -69,39 +69,244 @@ class CookieManager {
     }
 
     async initializeCookies() {
-        // Try to load real Instagram cookies from environment or file
-        const realCookies = await this.loadRealCookies();
+        // 🎉 NEW: Guest cookie factory approach - no more credential management!
+        console.log(`🚀 Initializing guest cookie factory for public Instagram scraping`);
 
-        if (realCookies.length > 0) {
-            console.log(`✅ Loaded ${realCookies.length} real Instagram cookie sets`);
-            for (const cookieSet of realCookies) {
-                // 🔴 CRITICAL: Fail fast if sessionid is missing
-                if (!cookieSet.cookies.sessionid) {
-                    throw new Error(`❌ CRITICAL: Cookie set ${cookieSet.id} missing sessionid - timeline queries will 401. Please add real Instagram cookies.`);
-                }
+        // Create guest cookie jars for each proxy/session
+        const guestCookieCount = 5; // Start with 5 guest jars, can scale up
+
+        for (let i = 1; i <= guestCookieCount; i++) {
+            try {
+                const guestJar = await this.createGuestCookieJar();
+                const cookieSet = {
+                    id: `guest_jar_${i}`,
+                    cookies: guestJar.cookies,
+                    jar: guestJar.jar,
+                    wwwClaim: guestJar.wwwClaim,
+                    asbdId: guestJar.asbdId,
+                    lsd: guestJar.lsd,
+                    lsdUntil: guestJar.lsdUntil,
+                    callCount: 0,
+                    usage: 0,
+                    lastUsed: 0,
+                    blocked: false
+                };
+
                 this.cookiePools.set(cookieSet.id, cookieSet);
+                console.log(`✅ Created guest jar ${i}: ${Object.keys(guestJar.cookies).length} cookies`);
+            } catch (error) {
+                console.log(`⚠️  Failed to create guest jar ${i}: ${error.message}`);
             }
-        } else {
-            // 🔴 CRITICAL: Fail fast if no real cookies found
-            throw new Error(`❌ CRITICAL: No real Instagram cookies found. Timeline queries require sessionid cookie.
-📝 Create cookies.json with format:
-[{
-  "sessionid": "552341234%3AHASH",
-  "ds_user_id": "552341234",
-  "csrftoken": "AKn...xyz",
-  "mid": "ZpL9AQABAAHd7hNTdn...",
-  "ig_did": "C55F5D27-04F0-49A5-9E8F-01D4D197C9EC",
-  "rur": "ATN"
-}]
-
-Or set environment variables:
-INSTAGRAM_SESSIONID=your_sessionid
-INSTAGRAM_DS_USER_ID=your_ds_user_id
-INSTAGRAM_CSRFTOKEN=your_csrftoken`);
         }
 
+        if (this.cookiePools.size === 0) {
+            throw new Error(`❌ CRITICAL: Failed to create any guest cookie jars. Check network connectivity.`);
+        }
+
+        console.log(`🎯 Guest cookie factory ready: ${this.cookiePools.size} jars created`);
         this.initializeDomainCookies();
         return this.cookiePools.size;
+    }
+
+    // 🎉 NEW: Guest cookie factory - creates anonymous Instagram cookies
+    async createGuestCookieJar() {
+        const axios = (await import('axios')).default;
+
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        };
+
+        try {
+            // Step 1: Get guest cookies from Instagram homepage
+            const response = await axios.get('https://www.instagram.com/', {
+                headers,
+                timeout: 10000,
+                validateStatus: (status) => status < 500
+            });
+
+            if (response.status !== 200) {
+                throw new Error(`Instagram homepage returned ${response.status}`);
+            }
+
+            // Step 2: Extract cookies from response
+            const cookies = {};
+            const setCookieHeaders = response.headers['set-cookie'] || [];
+
+            setCookieHeaders.forEach(cookieHeader => {
+                const [cookiePart] = cookieHeader.split(';');
+                const [name, value] = cookiePart.split('=');
+                if (name && value) {
+                    cookies[name.trim()] = value.trim();
+                }
+            });
+
+            // Step 3: Extract dynamic headers
+            const wwwClaim = response.headers['ig-set-www-claim'] || '0';
+            const asbdId = response.headers['ig-set-asbd-id'] || '129477';
+
+            // Step 4: Get LSD token from manifest
+            let lsd = null;
+            let lsdUntil = null;
+
+            try {
+                const manifestResponse = await axios.get('https://www.instagram.com/data/manifest.json?__a=1', {
+                    headers: {
+                        ...headers,
+                        'Cookie': Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
+                    },
+                    timeout: 5000
+                });
+
+                if (manifestResponse.data && manifestResponse.data.lsd) {
+                    lsd = manifestResponse.data.lsd;
+                    lsdUntil = Date.now() + 12 * 60 * 1000; // 12-min safety window
+                }
+            } catch (error) {
+                console.log(`⚠️  Could not fetch LSD token: ${error.message}`);
+            }
+
+            // Validate essential cookies (mid is optional, sometimes not set immediately)
+            if (!cookies.csrftoken) {
+                throw new Error(`Missing essential cookies: csrftoken=${!!cookies.csrftoken}`);
+            }
+
+            // Generate mid if not provided by Instagram (common for guest sessions)
+            if (!cookies.mid) {
+                cookies.mid = `ZpL9AQABAAHd7hNTdn${Math.random().toString(36).substr(2, 15)}`;
+                console.log(`🔧 Generated guest mid cookie: ${cookies.mid}`);
+            }
+
+            return {
+                cookies,
+                wwwClaim,
+                asbdId,
+                lsd,
+                lsdUntil,
+                jar: null // We'll manage cookies manually for better control
+            };
+
+        } catch (error) {
+            throw new Error(`Failed to create guest cookie jar: ${error.message}`);
+        }
+    }
+
+    // 🎯 NEW: Ensure fresh tokens for guest cookie jar
+    async ensureFreshTokens(cookieSet) {
+        const axios = (await import('axios')).default;
+
+        cookieSet.callCount = (cookieSet.callCount || 0) + 1;
+        const now = Date.now();
+
+        // Refresh WWW-Claim every 25 calls or if missing
+        if (!cookieSet.wwwClaim || cookieSet.callCount % 25 === 0) {
+            try {
+                const cookieString = Object.entries(cookieSet.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+                const headResponse = await axios.head('https://www.instagram.com/', {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Cookie': cookieString
+                    },
+                    timeout: 5000
+                });
+
+                cookieSet.wwwClaim = headResponse.headers['ig-set-www-claim'] || cookieSet.wwwClaim || '0';
+                console.log(`🔄 Refreshed WWW-Claim for ${cookieSet.id}: ${cookieSet.wwwClaim}`);
+            } catch (error) {
+                console.log(`⚠️  Failed to refresh WWW-Claim for ${cookieSet.id}: ${error.message}`);
+            }
+        }
+
+        // Refresh LSD token if expired or missing
+        if (!cookieSet.lsdUntil || cookieSet.lsdUntil < now) {
+            try {
+                const cookieString = Object.entries(cookieSet.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+                const manifestResponse = await axios.get('https://www.instagram.com/data/manifest.json?__a=1', {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Cookie': cookieString
+                    },
+                    timeout: 5000
+                });
+
+                if (manifestResponse.data && manifestResponse.data.lsd) {
+                    cookieSet.lsd = manifestResponse.data.lsd;
+                    cookieSet.lsdUntil = now + 12 * 60 * 1000; // 12-min safety window
+                    console.log(`🔄 Refreshed LSD token for ${cookieSet.id}`);
+                }
+            } catch (error) {
+                console.log(`⚠️  Failed to refresh LSD token for ${cookieSet.id}: ${error.message}`);
+            }
+        }
+    }
+
+    // 🎯 NEW: Build public headers for guest cookie jar
+    buildPublicHeaders(cookieSet) {
+        const cookieString = Object.entries(cookieSet.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+        const csrftoken = cookieSet.cookies.csrftoken || 'missing';
+
+        return {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-IG-App-ID': '936619743392459',
+            'X-ASBD-ID': cookieSet.asbdId || '129477',
+            'X-IG-WWW-Claim': cookieSet.wwwClaim || '0',
+            'X-FB-LSD': cookieSet.lsd || '',
+            'X-FB-Friendly-Name': 'PolarisProfileTimelineQuery',
+            'X-CSRFToken': csrftoken,
+            'Cookie': cookieString,
+            'Referer': 'https://www.instagram.com/',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        };
+    }
+
+    // 🎯 NEW: Get a guest cookie set for session (round-robin selection)
+    async getCookieSet(session) {
+        const availableCookieSets = Array.from(this.cookiePools.values()).filter(cs => !cs.blocked);
+
+        if (availableCookieSets.length === 0) {
+            console.log('⚠️  No available cookie sets, creating new guest jar');
+            try {
+                const guestJar = await this.createGuestCookieJar();
+                const cookieSet = {
+                    id: `guest_jar_emergency_${Date.now()}`,
+                    cookies: guestJar.cookies,
+                    jar: guestJar.jar,
+                    wwwClaim: guestJar.wwwClaim,
+                    asbdId: guestJar.asbdId,
+                    lsd: guestJar.lsd,
+                    lsdUntil: guestJar.lsdUntil,
+                    callCount: 0,
+                    usage: 0,
+                    lastUsed: 0,
+                    blocked: false
+                };
+                this.cookiePools.set(cookieSet.id, cookieSet);
+                return cookieSet;
+            } catch (error) {
+                console.log(`❌ Failed to create emergency guest jar: ${error.message}`);
+                return null;
+            }
+        }
+
+        // Simple round-robin selection based on usage
+        const leastUsed = availableCookieSets.reduce((min, current) =>
+            current.usage < min.usage ? current : min
+        );
+
+        leastUsed.usage++;
+        leastUsed.lastUsed = Date.now();
+
+        return leastUsed;
     }
 
     async loadRealCookies() {

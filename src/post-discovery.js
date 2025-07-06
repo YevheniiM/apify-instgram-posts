@@ -369,36 +369,20 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
         // Increase timeout on retries
         const timeout = 10000 * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
 
-        // Get dynamic tokens from session userData (extracted from bootstrap HTML)
-        const wwwClaim = session.userData?.wwwClaim || IG_CONSTANTS.WWW_CLAIM_FALLBACK;
-        const asbdId = session.userData?.asbdId || IG_CONSTANTS.ASBD_ID_FALLBACK;
-
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-IG-App-ID': IG_CONSTANTS.APP_ID,
-            'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
-            'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
-            'Referer': `https://www.instagram.com/${username}/`,
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-        };
-
-        // Add cookies to headers if available
-        if (activeCookieManager && cookieSet && typeof activeCookieManager.getCookieString === 'function') {
-            const cookieString = activeCookieManager.getCookieString(cookieSet);
-            if (cookieString) {
-                headers['Cookie'] = cookieString;
-
-                // Extract CSRF token from cookies for X-CSRFToken header
-                const csrfMatch = cookieString.match(/csrftoken=([^;]+)/);
-                if (csrfMatch && csrfMatch[1]) {
-                    headers['X-CSRFToken'] = csrfMatch[1];
-                }
-            }
+        // 🎉 NEW: Get guest cookie set for profile discovery
+        const guestCookieSet = await cookieManager.getCookieSet(session);
+        if (!guestCookieSet) {
+            throw new Error('No guest cookie set available for profile discovery');
         }
+
+        // Ensure tokens are fresh
+        await cookieManager.ensureFreshTokens(guestCookieSet);
+
+        // Use guest cookie headers
+        const headers = cookieManager.buildPublicHeaders(guestCookieSet);
+
+        // Set proper referer for profile discovery
+        headers['Referer'] = `https://www.instagram.com/${username}/`;
 
         const profileResponse = await axios.get(profileUrl, {
             headers,
@@ -483,11 +467,25 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 // Use optimized timeout - faster fail for residential proxies
                 const timeout = TIMEOUTS.GRAPHQL_REQUEST * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
 
-                // Get dynamic tokens from session userData (extracted from bootstrap HTML)
-                const { wwwClaim, asbdId, lsd } = session.userData ?? {};
+                // 🔍 DEBUG: Check cookieManager parameter
+                log.info(`🔍 DEBUG: cookieManager type: ${typeof cookieManager}`);
+                log.info(`🔍 DEBUG: cookieManager is null: ${cookieManager === null}`);
+                if (cookieManager) {
+                    log.info(`🔍 DEBUG: cookieManager.getCookieSet type: ${typeof cookieManager.getCookieSet}`);
+                    log.info(`🔍 DEBUG: cookieManager methods: ${Object.getOwnPropertyNames(cookieManager).join(', ')}`);
+                }
 
-                // Use fallback LSD token if not extracted from HTML
-                const lsdToken = lsd || 'AVqbxe3J_YA';
+                // 🎉 NEW: Get guest cookie set and ensure fresh tokens
+                const guestCookieSet = await cookieManager.getCookieSet(session);
+                if (!guestCookieSet) {
+                    throw new Error('No guest cookie set available for session');
+                }
+
+                // Ensure tokens are fresh before making GraphQL calls
+                await cookieManager.ensureFreshTokens(guestCookieSet);
+
+                // Use tokens from guest cookie set (no more hardcoded fallbacks!)
+                const lsdToken = guestCookieSet.lsd || '';
 
                 // 🔴 CRITICAL: Build POST payload (more reliable than GET for cloud IPs)
                 const payload = new URLSearchParams({
@@ -498,39 +496,18 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
                 log.info(`📡 GraphQL POST batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
 
-                const headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'X-IG-App-ID': IG_CONSTANTS.APP_ID,
-                    'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
-                    'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
-                    'X-FB-LSD': lsdToken, // Required since Feb 2025
-                    'X-FB-Friendly-Name': 'PolarisProfileTimelineQuery', // 🟠 P2: Reduces 403s
-                    'Referer': `https://www.instagram.com/${username}/`,
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                };
+                // 🎯 NEW: Use guest cookie headers (no more hardcoded fallbacks!)
+                const headers = cookieManager.buildPublicHeaders(guestCookieSet);
 
-                // Add cookies to headers if available
-                if (activeCookieManager && cookieSet && typeof activeCookieManager.getCookieString === 'function') {
-                    const cookieString = activeCookieManager.getCookieString(cookieSet);
-                    if (cookieString) {
-                        headers['Cookie'] = cookieString;
+                // Override LSD token with fresh one
+                headers['X-FB-LSD'] = lsdToken;
 
-                        // Extract CSRF token from cookies for X-CSRFToken header
-                        const csrfMatch = cookieString.match(/csrftoken=([^;]+)/);
-                        if (csrfMatch && csrfMatch[1]) {
-                            headers['X-CSRFToken'] = csrfMatch[1];
-                        }
+                // Set proper referer for this profile
+                headers['Referer'] = `https://www.instagram.com/${username}/`;
 
-                        // Debug logging for production troubleshooting
-                        log.debug('GraphQL Request Headers:', JSON.stringify(headers, null, 2));
-                        log.debug('Cookie header:', cookieString?.slice(0, 120));
-                    }
-                }
+                // Debug logging for production troubleshooting
+                log.debug('GraphQL Request Headers:', JSON.stringify(headers, null, 2));
+                log.debug('Guest cookie jar ID:', guestCookieSet.id);
 
                 // 🔴 CRITICAL: Use POST instead of GET (more reliable for cloud IPs)
                 const response = await axios.post(graphqlUrl, payload, {

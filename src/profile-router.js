@@ -4,6 +4,7 @@ import { discoverPosts } from './post-discovery.js';
 import axios from 'axios';
 import crypto from 'crypto';
 import { primeCsrf } from './session-utils.js';
+import { CookieManager } from './post-router.js';
 
 // Create router for Phase 1: Profile Discovery (production session management)
 export const profileRouter = createCheerioRouter();
@@ -49,9 +50,20 @@ export async function getUserIdViaAPI(username, session, log) {
     }
 }
 
+// Initialize our custom cookie manager for guest cookies
+const guestCookieManager = new CookieManager();
+let cookieManagerInitialized = false;
+
 // Profile discovery handler - uses production session management
 profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, session }) => {
     const { username, originalUrl, onlyPostsNewerThan, maxPosts, includeReels, includeIGTV } = request.userData;
+
+    // 🎉 NEW: Initialize guest cookie factory for profile discovery
+    if (!cookieManagerInitialized) {
+        await guestCookieManager.initializeCookies();
+        cookieManagerInitialized = true;
+        log.info('Guest cookie factory initialized for profile discovery');
+    }
 
     log.info(`Phase 1: Profile discovery for ${username}`);
 
@@ -232,13 +244,18 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
             }
         };
 
-        // Use our enhanced post discovery method with dynamic tokens and calculated target
+        // 🔍 DEBUG: Check guestCookieManager before passing to discoverPosts
+        log.info(`🔍 DEBUG: guestCookieManager type: ${typeof guestCookieManager}`);
+        log.info(`🔍 DEBUG: guestCookieManager.getCookieSet type: ${typeof guestCookieManager?.getCookieSet}`);
+        log.info(`🔍 DEBUG: guestCookieManager methods: ${Object.getOwnPropertyNames(guestCookieManager).join(', ')}`);
+
+        // 🎯 FIXED: Use our custom guest cookie manager instead of Crawlee's built-in one
         const shortcodes = await discoverPosts(username, {
             maxPosts: targetPostCount,
             methods: ['directapi'], // Use our enhanced direct API method with dynamic tokens
             fallbackToKnown: true,
             prefetchedUserId: userId
-        }, log, session, cookieManager, throttling);
+        }, log, session, guestCookieManager, throttling);
 
         log.info(`✅ Enhanced discovery found ${shortcodes.length} posts for ${username}`);
 
