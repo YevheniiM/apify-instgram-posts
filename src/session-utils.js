@@ -29,3 +29,73 @@ export function extractCsrfToken(cookieString) {
     const csrfMatch = cookieString.match(/csrftoken=([^;]+)/);
     return csrfMatch ? csrfMatch[1] : null;
 }
+
+// Proactively refresh CSRF token when authentication starts failing
+export async function refreshCsrfToken(session, log) {
+    try {
+        const axios = (await import('axios')).default;
+
+        log.info('🔄 Refreshing CSRF token due to authentication issues');
+
+        const response = await axios.get('https://www.instagram.com/', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Cookie': session.getCookieString('https://www.instagram.com')
+            },
+            timeout: 7000,
+            validateStatus: s => s < 500
+        });
+
+        if (response.status === 200) {
+            // Extract new CSRF token from response
+            const newCsrfMatch = response.data.match(/"csrf_token":"([^"]+)"/);
+            if (newCsrfMatch) {
+                session.setCookie({
+                    name: 'csrftoken',
+                    value: newCsrfMatch[1],
+                    domain: '.instagram.com',
+                    path: '/'
+                });
+                log.info('✅ CSRF token refreshed successfully');
+                return true;
+            }
+        }
+
+        log.warning('⚠️ CSRF token refresh failed - no new token found');
+        return false;
+
+    } catch (error) {
+        log.warning(`⚠️ CSRF token refresh failed: ${error.message}`);
+        return false;
+    }
+}
+
+// Get fresh LSD token without re-downloading full profile HTML
+export async function getFreshLsd(session, log) {
+    try {
+        const axios = (await import('axios')).default;
+
+        const response = await axios.get('https://www.instagram.com/data/manifest.json?__a=1', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Cookie': session.getCookieString('https://www.instagram.com')
+            },
+            timeout: 5000,
+            validateStatus: s => s < 500
+        });
+
+        if (response.status === 200 && response.data?.lsd) {
+            log.debug('✅ Fresh LSD token obtained from manifest endpoint');
+            return response.data.lsd;
+        }
+
+        return null;
+
+    } catch (error) {
+        log.debug(`LSD refresh failed: ${error.message}`);
+        return null;
+    }
+}

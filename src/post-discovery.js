@@ -16,7 +16,8 @@
 // Note: CookieManager and SmartThrottling classes are passed as parameters
 // to avoid circular imports. They are defined in routes.js and post-router.js
 
-import { SHORTCODE_DOC_ID } from './constants.js';
+import { SHORTCODE_DOC_ID, TIMEOUTS } from './constants.js';
+import { refreshCsrfToken, getFreshLsd } from './session-utils.js';
 
 // BEFORE – loose capture, grabs "rum-slate-t" etc.
 // AFTER – *exact* 11-char shortcode & validation helper
@@ -80,6 +81,9 @@ class RetryManager {
         this.sessionAttempts = new Map();
         this.cookieRotationCount = 0;
         this.currentCookieSet = null;
+        this.authFailures = new Map(); // Track auth failures per session
+        this.lastAuthFailure = null; // Track timing for proactive refresh
+        this.graphqlCallCount = 0; // Track GraphQL calls for token refresh
     }
 
     async executeWithRetry(operation, context, maxRetries = RETRY_CONFIG.maxRetries) {
@@ -130,6 +134,26 @@ class RetryManager {
     // Handle session rotation, cookie rotation, and throttling for retries
     async handleRetryPreparation(error, attempt, context) {
         const errorStatus = error.response?.status || error.message;
+
+        // Handle authentication failures with proactive refresh
+        if (error.response?.status === 401) {
+            const sessionId = this.session?.id || 'unknown';
+            const now = Date.now();
+
+            // Track auth failures per session
+            if (!this.authFailures.has(sessionId)) {
+                this.authFailures.set(sessionId, []);
+            }
+            this.authFailures.get(sessionId).push(now);
+
+            // Check if we've had 2+ 401s in 5 minutes - trigger proactive refresh
+            const recentFailures = this.authFailures.get(sessionId).filter(time => now - time < 5 * 60 * 1000);
+            if (recentFailures.length >= 2 && this.session) {
+                this.log.info(`🔄 ${context} - Proactively refreshing CSRF token (${recentFailures.length} auth failures in 5min)`);
+                await refreshCsrfToken(this.session, this.log);
+                this.authFailures.set(sessionId, []); // Reset counter after refresh
+            }
+        }
 
         // Handle session rotation for specific errors
         if (this.needsSessionRotation(error)) {
@@ -205,9 +229,41 @@ class RetryManager {
     }
 
     calculateDelay(attempt) {
-        const exponentialDelay = RETRY_CONFIG.baseDelay * Math.pow(2, attempt - 1);
-        const jitter = Math.random() * 1000; // Add jitter to prevent thundering herd
-        return Math.min(exponentialDelay + jitter, RETRY_CONFIG.maxDelay);
+        // Jitter first, then exponential backoff to avoid synchronized retries
+        const base = RETRY_CONFIG.baseDelay * (0.5 + Math.random()); // 0.5-1.5x base
+        const exponentialDelay = base * Math.pow(2, attempt - 1);
+        return Math.min(exponentialDelay, 15000); // Cap at 15s instead of 30s for faster recovery
+    }
+
+    // Check if tokens need refreshing based on GraphQL call count
+    async checkTokenRefresh(username) {
+        this.graphqlCallCount++;
+
+        // Re-extract WWW-Claim every 25 successful GraphQL calls
+        if (this.graphqlCallCount % 25 === 0 && this.session) {
+            this.log.info(`🔄 Refreshing WWW-Claim token after ${this.graphqlCallCount} GraphQL calls`);
+
+            try {
+                const axios = (await import('axios')).default;
+                const response = await axios.head(`https://www.instagram.com/${username}/`, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Cookie': this.session.getCookieString('https://www.instagram.com')
+                    },
+                    timeout: TIMEOUTS.TOKEN_REFRESH,
+                    validateStatus: s => s < 500
+                });
+
+                // Extract fresh WWW-Claim from response headers
+                const newWwwClaim = response.headers['ig-set-www-claim'];
+                if (newWwwClaim && this.session.userData) {
+                    this.session.userData.wwwClaim = newWwwClaim;
+                    this.log.info(`✅ WWW-Claim token refreshed: ${newWwwClaim}`);
+                }
+            } catch (error) {
+                this.log.debug(`WWW-Claim refresh failed: ${error.message}`);
+            }
+        }
     }
 
     needsSessionRotation(error) {
@@ -415,8 +471,8 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
 
                 const axios = (await import('axios')).default;
 
-                // Increase timeout on retries
-                const timeout = 15000 * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
+                // Use optimized timeout - faster fail for residential proxies
+                const timeout = TIMEOUTS.GRAPHQL_REQUEST * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
 
                 // Get dynamic tokens from session userData (extracted from bootstrap HTML)
                 const { wwwClaim, asbdId, lsd } = session.userData ?? {};
