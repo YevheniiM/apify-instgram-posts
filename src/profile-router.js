@@ -81,41 +81,52 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // Check for login redirect and bootstrap if needed
         const htmlContent = $.html();
-        if (htmlContent.includes('login') || htmlContent.includes('Login')) {
-            log.info(`Login redirect detected - bootstrapping session with anonymous request`);
+        if (htmlContent.includes('login') || htmlContent.includes('Login') || htmlContent.length < 10000) {
+            log.info(`Login redirect detected - using guest cookie approach for production`);
 
-            // Anonymous bootstrap: make request to Instagram.com to get initial cookies
+            // 🎯 PRODUCTION FIX: Use guest cookie factory instead of manual bootstrap
+            const { cookieManager } = await import('./post-router.js');
+
+            // Initialize cookie manager if not already done
+            if (!cookieManager.cookiePools || cookieManager.cookiePools.size === 0) {
+                await cookieManager.initializeCookies();
+                log.info(`🍪 Guest cookie factory initialized with ${cookieManager.cookiePools.size} jars`);
+            }
+
+            // Get a fresh guest cookie set
+            const guestCookieSet = cookieManager.getCookiesForRequest();
+            if (guestCookieSet) {
+                // Apply guest cookies to session
+                for (const [name, value] of Object.entries(guestCookieSet.cookies)) {
+                    await session.setCookie(`${name}=${value}`, 'https://www.instagram.com');
+                }
+                log.info(`🔑 Applied guest cookies: ${Object.keys(guestCookieSet.cookies).join(', ')}`);
+
+                // Ensure fresh tokens
+                await cookieManager.ensureFreshTokens(guestCookieSet);
+                log.info(`🔄 Refreshed tokens: WWW-Claim="${guestCookieSet.wwwClaim}", ASBD-ID="${guestCookieSet.asbdId}"`);
+            }
+
+            // Try to re-fetch the profile page with guest cookies
             const axios = (await import('axios')).default;
-            const bootstrapResponse = await axios.get('https://www.instagram.com/', {
+            const retryResponse = await axios.get(`https://www.instagram.com/${username}/`, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br'
+                    'Cookie': session.getCookieString('https://www.instagram.com')
                 },
                 timeout: 30000,
                 validateStatus: () => true
             });
 
-            log.info(`Bootstrap response status: ${bootstrapResponse.status}`);
-
-            // Extract cookies from bootstrap response and copy them into the session
-            const setCookieHeaders = bootstrapResponse.headers['set-cookie'] || [];
-            log.info(`Bootstrap received ${setCookieHeaders.length} cookies`);
-
-            // CRITICAL FIX: Copy bootstrap cookies into Crawlee session
-            for (const raw of setCookieHeaders) {
-                await session.setCookie(raw, 'https://www.instagram.com');
-                const cookieMatch = raw.match(/^([^=]+)=([^;]+)/);
-                if (cookieMatch) {
-                    log.info(`Bootstrap cookie: ${cookieMatch[1]}`);
-                }
-            }
-
-            // CRITICAL FIX: Ensure CSRF token is present before GraphQL requests
-            if (!session.getCookieString('https://www.instagram.com').includes('csrftoken=')) {
-                primeCsrf(session);
-                log.info(`🔑 CSRF token primed for session`);
+            if (retryResponse.status === 200 && retryResponse.data.length > 10000) {
+                log.info(`✅ Guest cookie retry successful - got profile data`);
+                // Update the HTML content for processing
+                const cheerio = (await import('cheerio')).default;
+                $ = cheerio.load(retryResponse.data);
+            } else {
+                log.warning(`⚠️ Guest cookie retry failed - status: ${retryResponse.status}, length: ${retryResponse.data?.length || 0}`);
             }
         } else {
             log.info(`✅ Successfully authenticated! No login redirect detected.`);
