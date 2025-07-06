@@ -100,102 +100,65 @@ export async function getFreshLsd(session, log) {
     }
 }
 
-// 🎯 ROBUST LSD RETRIEVAL: Multi-source approach for Instagram's new requirements
+// 🎯 ROBUST LSD RETRIEVAL: Enhanced debugging to see what Instagram actually serves
 export async function fetchFreshLsd(session, log) {
-    // Check cache first - 10 minute TTL
-    const cacheOK = session.userData.lsdUntil && session.userData.lsdUntil > Date.now();
-    if (cacheOK && session.userData.lsd) {
-        return session.userData.lsd;
-    }
-
-    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+    const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
     const axios = (await import('axios')).default;
     const cookie = session.getCookieString('https://www.instagram.com') || '';
 
-    // 🔍 DEBUG: Check what Instagram is actually serving us
-    try {
-        const loginHtml = await axios.get(
-            'https://www.instagram.com/accounts/login/',
-            { headers: { 'User-Agent': UA }, timeout: 7000 }
-        ).then(r => r.data.slice(0, 2048));  // first 2 KB
+    const sources = [
+        { url: 'https://www.instagram.com/accounts/login/',
+          note: 'login-form' },
+        { url: 'https://www.instagram.com/',
+          note: 'front-page' }
+    ];
 
-        log.debug('[LSD-DEBUG] Login page snippet:\n' + loginHtml.replace(/\n/g, ''));
-    } catch (error) {
-        log.debug(`[LSD-DEBUG] Failed to fetch login page: ${error.message}`);
-    }
-
-    // Helper function to try a request and extract token with updated regex patterns
-    const tryFetch = async (url, extractor, headers = {}) => {
+    for (const src of sources) {
         try {
-            const response = await axios.get(url, {
-                headers: { 'User-Agent': UA, Cookie: cookie, ...headers },
+            const resp = await axios.get(src.url, {
+                headers: { 'User-Agent': UA, Cookie: cookie },
                 timeout: 7000,
                 validateStatus: s => s < 500
             });
-            return extractor(response.data, response.headers);
-        } catch (error) {
-            log.debug(`LSD fetch failed for ${url}: ${error.message}`);
-            return null;
-        }
-    };
 
-    // 🎯 UPDATED EXTRACTOR: Multi-regex approach for June 2025+ changes
-    const extractLsdFromHtml = (html) => {
-        const tokenRegexes = [
-            /"lsd":{"token":"([A-Za-z0-9_-]{16,})"}/,      // June-2025 layout (__additionalDataLoaded)
-            /"token":"([A-Za-z0-9_-]{16,})"/,             // fallback pattern
-            /name="lsd" value="([^"]+)"/                  // legacy login form
-        ];
+            log.debug(`[LSD-FETCH] ${src.note} → ${resp.status} / ${resp.headers['content-type']}`);
+            log.debug(`[LSD-HEAD]  wClaim=${resp.headers['ig-set-www-claim']}  asbd=${resp.headers['ig-set-asbd-id']}`);
+            log.debug('[LSD-BODY] ' + String(resp.data).slice(0,1024).replace(/\n/g,''));
 
-        for (const regex of tokenRegexes) {
-            const match = html.match(regex);
-            if (match) {
-                log.debug(`✅ LSD token found with pattern: ${regex.source}`);
-                return match[1];
+            const html = String(resp.data);
+            const rx = /"lsd":\{"token":"([A-Za-z0-9_-]{16,})"/;      // June 2025 format
+            const m  = html.match(rx) || html.match(/name="lsd" value="([^"]+)"/);
+            if (m) {
+                session.userData.lsd = m[1];
+                session.userData.lsdUntil = Date.now() + 10*60*1000;
+                log.info(`[LSD] extracted ${m[1].slice(0,8)}… from ${src.note}`);
+                return m[1];
             }
+        } catch (err) {
+            log.debug(`[LSD-ERR] ${src.note}: ${err.message}`);
         }
-        return null;
-    };
-
-    let lsd = null;
-
-    // 🎯 METHOD 1: Login page with updated extraction (most reliable)
-    lsd = await tryFetch(
-        'https://www.instagram.com/accounts/login/',
-        extractLsdFromHtml
-    );
-
-    // 🎯 METHOD 2: Home page with updated extraction (since manifest.json no longer works)
-    if (!lsd) {
-        lsd = await tryFetch(
-            'https://www.instagram.com/',
-            extractLsdFromHtml
-        );
     }
 
-    // 🎯 METHOD 3: Any profile page as final fallback
-    if (!lsd) {
-        lsd = await tryFetch(
-            'https://www.instagram.com/instagram/',
-            extractLsdFromHtml
-        );
-    }
-
-    if (lsd) {
-        session.userData.lsd = lsd;
-        session.userData.lsdUntil = Date.now() + 10 * 60 * 1000; // 10 min TTL
-        log.debug(`🔑 New LSD token: ${lsd.slice(0, 8)}...`);
-        return lsd;
-    }
-
-    log.warning('⚠️ Could not refresh LSD token - continuing without it');
+    // nothing found
+    log.warning('⚠️ Could not refresh LSD token – continuing without it');
     return null;
 }
 
 // 🎯 CONVENIENCE FUNCTION: Ensure LSD token is available
 export async function ensureLsdToken(session, log) {
-    if (!session.userData.lsdUntil || session.userData.lsdUntil < Date.now()) {
+    const ttlOk = session.userData.lsd && session.userData.lsdUntil > Date.now();
+
+    if (!ttlOk) {
+        log.info('[LSD] cache miss or expired – going to network');
         await fetchFreshLsd(session, log);
+
+        // FORCE a log even if the fetch failed
+        if (!session.userData.lsd) {
+            log.warning('[LSD] still empty after refresh – injecting dummy token so flow continues');
+            const crypto = await import('crypto');
+            session.userData.lsd = crypto.randomBytes(12).toString('base64');  // 16 chars
+            session.userData.lsdUntil = Date.now() + 5*60*1000;                // 5 min TTL
+        }
     }
     return session.userData.lsd;
 }
