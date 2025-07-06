@@ -577,13 +577,15 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             const { ensureLsdToken } = await import('./session-utils.js');
             await ensureLsdToken(session, log);
 
-            log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'present' : 'missing'}" (from profile discovery)`);
+            // 🎯 GRACEFUL EMPTY LSD: Use valid-length token even if extraction failed
+            const lsdToken = session.userData.lsd || '1'.repeat(16); // bogus but valid length
+            log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'real' : 'fallback'}" (from profile discovery)`);
 
             // 🎯 PRODUCTION HEADERS: Clean headers that work with IG's current requirements
             const productionHeaders = {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'X-IG-App-ID': '936619743392459', // Required anti-bot header
-                'X-FB-LSD': session.userData.lsd || '', // 🎯 CRITICAL: LSD token for CSRF protection
+                'X-FB-LSD': lsdToken, // 🎯 CRITICAL: Always send valid-length LSD token
                 'X-ASBD-ID': asbdId, // Dynamic per-session token
                 // 🎯 REMOVED: X-IG-WWW-Claim - better to omit than send "0"
                 'Cookie': Object.entries(cookieSet.cookies).map(([key, value]) => `${key}=${value}`).join('; '),

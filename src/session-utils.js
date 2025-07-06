@@ -112,7 +112,19 @@ export async function fetchFreshLsd(session, log) {
     const axios = (await import('axios')).default;
     const cookie = session.getCookieString('https://www.instagram.com') || '';
 
-    // Helper function to try a request and extract token
+    // 🔍 DEBUG: Check what Instagram is actually serving us
+    try {
+        const loginHtml = await axios.get(
+            'https://www.instagram.com/accounts/login/',
+            { headers: { 'User-Agent': UA }, timeout: 7000 }
+        ).then(r => r.data.slice(0, 2048));  // first 2 KB
+
+        log.debug('[LSD-DEBUG] Login page snippet:\n' + loginHtml.replace(/\n/g, ''));
+    } catch (error) {
+        log.debug(`[LSD-DEBUG] Failed to fetch login page: ${error.message}`);
+    }
+
+    // Helper function to try a request and extract token with updated regex patterns
     const tryFetch = async (url, extractor, headers = {}) => {
         try {
             const response = await axios.get(url, {
@@ -127,37 +139,45 @@ export async function fetchFreshLsd(session, log) {
         }
     };
 
+    // 🎯 UPDATED EXTRACTOR: Multi-regex approach for June 2025+ changes
+    const extractLsdFromHtml = (html) => {
+        const tokenRegexes = [
+            /"lsd":{"token":"([A-Za-z0-9_-]{16,})"}/,      // June-2025 layout (__additionalDataLoaded)
+            /"token":"([A-Za-z0-9_-]{16,})"/,             // fallback pattern
+            /name="lsd" value="([^"]+)"/                  // legacy login form
+        ];
+
+        for (const regex of tokenRegexes) {
+            const match = html.match(regex);
+            if (match) {
+                log.debug(`✅ LSD token found with pattern: ${regex.source}`);
+                return match[1];
+            }
+        }
+        return null;
+    };
+
     let lsd = null;
 
-    // 🎯 METHOD 1: Login page hidden input (most reliable)
+    // 🎯 METHOD 1: Login page with updated extraction (most reliable)
     lsd = await tryFetch(
         'https://www.instagram.com/accounts/login/',
-        html => {
-            const match = html.match(/name="lsd" value="([^"]+)"/);
-            return match ? match[1] : null;
-        }
+        extractLsdFromHtml
     );
 
-    // 🎯 METHOD 2: Manifest.json with App-ID header
-    if (!lsd) {
-        lsd = await tryFetch(
-            'https://www.instagram.com/data/manifest.json?__a=1&__d=dis',
-            data => data?.lsd,
-            {
-                'X-IG-App-ID': '936619743392459',
-                'Accept': 'application/json'
-            }
-        );
-    }
-
-    // 🎯 METHOD 3: Generic HTML blob fallback
+    // 🎯 METHOD 2: Home page with updated extraction (since manifest.json no longer works)
     if (!lsd) {
         lsd = await tryFetch(
             'https://www.instagram.com/',
-            html => {
-                const match = html.match(/"token":"([A-Za-z0-9_-]{16,})"/);
-                return match ? match[1] : null;
-            }
+            extractLsdFromHtml
+        );
+    }
+
+    // 🎯 METHOD 3: Any profile page as final fallback
+    if (!lsd) {
+        lsd = await tryFetch(
+            'https://www.instagram.com/instagram/',
+            extractLsdFromHtml
         );
     }
 
