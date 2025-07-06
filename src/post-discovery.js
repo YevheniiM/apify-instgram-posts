@@ -446,7 +446,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
             batchCount++;
 
             const batchResult = await retryManager.executeWithRetry(async (attempt) => {
-                const batchSize = 12; // Use 12 posts per batch to stay under Instagram's radar (as recommended)
+                const batchSize = 50; // Increase batch size for better efficiency while staying under Instagram's limits
 
                 // Use GET endpoint to sidestep LSD requirement (as per your suggestion)
                 const graphqlUrl = 'https://www.instagram.com/graphql/query/';
@@ -548,12 +548,37 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 100, log, 
 
                 const data = response.data;
 
+                // Check for GraphQL errors first
+                if (data.errors && data.errors.length > 0) {
+                    const errorMessage = data.errors[0].message || 'Unknown GraphQL error';
+                    log.warning(`GraphQL API error for ${username}: ${errorMessage}`);
+                    throw new Error(`GraphQL API error: ${errorMessage}`);
+                }
+
+                // Check if data is null (common Instagram response when blocked)
+                if (data.data === null) {
+                    log.warning(`GraphQL returned null data for ${username} - likely blocked or invalid request`);
+                    throw new Error(`GraphQL returned null data - request blocked or invalid`);
+                }
+
                 // Handle GraphQL response structure
                 if (!data.data?.user?.edge_owner_to_timeline_media?.edges) {
+                    // Debug: Log the actual response structure
+                    log.debug(`GraphQL Response structure for batch ${batchCount}:`, {
+                        hasData: !!data,
+                        dataKeys: data ? Object.keys(data) : [],
+                        hasDataData: !!(data && data.data),
+                        dataDataKeys: (data && data.data) ? Object.keys(data.data) : [],
+                        hasUser: !!(data && data.data && data.data.user),
+                        userKeys: (data && data.data && data.data.user) ? Object.keys(data.data.user) : []
+                    });
+
                     // Check for common error responses
                     if (data.data?.user === null) {
                         throw new Error(`Unauthorized access to posts for ${username} - session rotation needed`);
                     }
+
+                    log.error(`GraphQL response structure debug:`, JSON.stringify(data, null, 2));
                     throw new Error(`Unexpected GraphQL response structure in batch ${batchCount}`);
                 }
 
@@ -941,17 +966,50 @@ export async function discoverPostsViaHTMLParsing(username, maxPosts = 12, log) 
     }
 }
 
-// Missing Fallback Method 2: Alternative API Endpoints
+// Enhanced Fallback Method: Alternative API Endpoints with Pagination Support
 export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, log, session) {
-    log.info(`🔄 Fallback 3: Alternative API endpoints for ${username}`);
+    log.info(`🔄 Fallback 3: Alternative API endpoints for ${username} (target: ${maxPosts} posts)`);
 
-    const shortcodes = [];
+    let shortcodes = [];
+
+    // Try to get user ID first for mobile API
+    let userId = null;
+    try {
+        // Try to extract user ID from session userData (from profile discovery)
+        userId = session?.userData?.userId;
+        if (!userId) {
+            // Fallback: try to get user ID from web profile info
+            const axios = (await import('axios')).default;
+            const response = await axios.get(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                    'X-IG-App-ID': '936619743392459'
+                },
+                timeout: 5000,
+                validateStatus: (status) => status < 500
+            });
+
+            if (response.status === 200 && response.data?.data?.user?.id) {
+                userId = response.data.data.user.id;
+            }
+        }
+
+        if (userId) {
+            shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log);
+            if (shortcodes.length > 0) {
+                log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
+                return shortcodes;
+            }
+        }
+    } catch (error) {
+        log.debug(`Mobile API failed: ${error.message}`);
+    }
+
+    // Fallback to web profile info endpoints
     const alternativeEndpoints = [
         // Alternative endpoint 1: Different Instagram API
         `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
-        // Alternative endpoint 2: GraphQL endpoint
-        `https://www.instagram.com/graphql/query/`,
-        // Alternative endpoint 3: Mobile API endpoint
+        // Alternative endpoint 2: Mobile API endpoint
         `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`
     ];
 
@@ -982,7 +1040,7 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, lo
                     query_hash: '58b6785bea111c67129decbe6a448951', // User posts query hash
                     variables: JSON.stringify({
                         id: username,
-                        first: Math.min(maxPosts, 12)
+                        first: Math.min(maxPosts, 50) // Increase batch size for better efficiency
                     })
                 };
                 requestConfig.headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -1036,4 +1094,83 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 12, lo
 
     log.info(`Alternative API endpoints found ${shortcodes.length} posts for ${username}`);
     return shortcodes.slice(0, maxPosts);
+}
+
+// Mobile API with pagination support
+async function tryMobileAPIWithPagination(userId, maxPosts, log) {
+    const shortcodes = [];
+    let hasNextPage = true;
+    let maxId = null;
+    let batchCount = 0;
+
+    const axios = (await import('axios')).default;
+
+    while (hasNextPage && shortcodes.length < maxPosts && batchCount < 10) { // Limit to 10 batches for safety
+        batchCount++;
+
+        try {
+            // Build mobile API URL with pagination
+            let apiUrl = `https://i.instagram.com/api/v1/feed/user/${userId}/`;
+            const params = new URLSearchParams({
+                count: Math.min(50, maxPosts - shortcodes.length), // Request up to 50 posts per batch
+                ...(maxId && { max_id: maxId }) // Add pagination cursor if available
+            });
+            apiUrl += `?${params}`;
+
+            const response = await axios.get(apiUrl, {
+                headers: {
+                    'User-Agent': 'Instagram 300.0.0.0 iOS',
+                    'X-IG-App-ID': '936619743392459',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                timeout: 8000,
+                validateStatus: (status) => status < 500
+            });
+
+            if (response.status !== 200 || !response.data) {
+                log.debug(`Mobile API batch ${batchCount} failed with status ${response.status}`);
+                break;
+            }
+
+            const data = response.data;
+
+            // Extract posts from mobile API response
+            if (data.items && Array.isArray(data.items)) {
+                for (const item of data.items) {
+                    const shortcode = item.code || item.shortcode;
+                    if (shortcode && !shortcodes.includes(shortcode)) {
+                        shortcodes.push(shortcode);
+                        if (shortcodes.length >= maxPosts) break;
+                    }
+                }
+
+                // Check for pagination
+                hasNextPage = data.more_available && data.next_max_id;
+                maxId = data.next_max_id;
+
+                log.debug(`Mobile API batch ${batchCount}: found ${data.items.length} posts, total: ${shortcodes.length}/${maxPosts}`);
+
+                if (data.items.length === 0) {
+                    log.debug(`Mobile API batch ${batchCount} returned no posts - stopping pagination`);
+                    break;
+                }
+            } else {
+                log.debug(`Mobile API batch ${batchCount} returned unexpected structure`);
+                break;
+            }
+
+            // Add delay between requests
+            if (hasNextPage && shortcodes.length < maxPosts) {
+                await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
+            }
+
+        } catch (error) {
+            log.debug(`Mobile API batch ${batchCount} error: ${error.message}`);
+            break;
+        }
+    }
+
+    return shortcodes;
 }
