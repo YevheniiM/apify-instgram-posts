@@ -16,6 +16,16 @@
 // Note: CookieManager and SmartThrottling classes are passed as parameters
 // to avoid circular imports. They are defined in routes.js and post-router.js
 
+import { SHORTCODE_DOC_ID } from './constants.js';
+
+// BEFORE – loose capture, grabs "rum-slate-t" etc.
+// AFTER – *exact* 11-char shortcode & validation helper
+const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{11})\//g;
+
+export function isValidShortcode(code) {
+  return /^[A-Za-z0-9_-]{11}$/.test(code);
+}
+
 // Enhanced retry configuration for maximum reliability
 const RETRY_CONFIG = {
     maxRetries: 3,
@@ -32,7 +42,7 @@ const IG_CONSTANTS = {
     APP_ID: '936619743392459',   // Public web-client ID
     ASBD_ID_FALLBACK: '129477',  // Fallback ASBD-ID (Instagram now rotates per-session)
     WWW_CLAIM_FALLBACK: '0',     // Fallback WWW-Claim (Instagram now rotates per-session)
-    DOC_ID: '7950326061742207'   // Current doc_id for user posts - update if getting empty arrays
+    DOC_ID: SHORTCODE_DOC_ID     // Current doc_id for user posts - updated July 2025
 };
 
 /**
@@ -838,14 +848,15 @@ export async function discoverPostsViaHTMLParsing(username, maxPosts = 12, log) 
             });
         }
 
-        // Method 3: Look for shortcodes in any text content
+        // Method 3: Look for shortcodes in URL patterns within text content (FIXED: use proper regex)
         if (shortcodes.length === 0) {
             const pageText = $.text();
-            const shortcodeMatches = pageText.match(/[A-Za-z0-9_-]{11}/g) || [];
+            const shortcodeMatches = pageText.match(SHORTCODE_RE) || [];
 
             for (const match of shortcodeMatches) {
-                if (match.length === 11 && /^[A-Za-z0-9_-]+$/.test(match)) {
-                    shortcodes.push(match);
+                const shortcodeMatch = match.match(/\/p\/([A-Za-z0-9_-]{11})\//);
+                if (shortcodeMatch && isValidShortcode(shortcodeMatch[1])) {
+                    shortcodes.push(shortcodeMatch[1]);
                     if (shortcodes.length >= maxPosts) break;
                 }
             }

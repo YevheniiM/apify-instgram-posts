@@ -1,15 +1,16 @@
 import { createCheerioRouter, Dataset } from 'crawlee';
 import moment from 'moment';
-import { discoverPosts } from './post-discovery.js';
+import { discoverPosts, isValidShortcode } from './post-discovery.js';
+import { SHORTCODE_DOC_ID } from './constants.js';
 
 // Create router for direct post extraction (single-phase architecture)
 export const postRouter = createCheerioRouter();
 
-// Production GraphQL document IDs (updated March 2025)
+// Production GraphQL document IDs (updated July 2025)
 const INSTAGRAM_DOCUMENT_IDS = {
     USER_POSTS: '7950326061742207', // For user timeline posts (from production logs)
-    SHORTCODE_MEDIA: '8845758582119845', // For individual posts by shortcode (updated March 2025)
-    BATCH_SHORTCODE_MEDIA: '8845758582119845' // For batch post retrieval
+    SHORTCODE_MEDIA: SHORTCODE_DOC_ID, // For individual posts by shortcode (updated July 2025)
+    BATCH_SHORTCODE_MEDIA: SHORTCODE_DOC_ID // For batch post retrieval
 };
 
 // Production-scale throttling and delay management
@@ -491,6 +492,12 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     }
 
     const shortcode = shortcodeMatch[1];
+
+    // BEFORE – bail out early if the shortcode is bad
+    if (!isValidShortcode(shortcode)) {
+        log.debug(`${shortcode} rejected – invalid`);
+        return;
+    }
 
     // Use production GraphQL API for post extraction with dynamic tokens
     const postData = await extractSinglePostViaGraphQL(shortcode, username, originalUrl, log, session, request.userData);

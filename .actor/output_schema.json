@@ -1,4 +1,5 @@
 {
+    "actorOutputSchemaVersion": 1,
     "title": "Instagram Post Scraper Output",
     "type": "object",
     "schemaVersion": 1,
@@ -6,164 +7,68 @@
         "id": {
             "title": "Post ID",
             "type": "string",
-            "description": "Unique Instagram post ID"
+            "description": "Unique Instagram post ID",
+            "template": "{{id}}"
         },
         "type": {
             "title": "Post Type",
             "type": "string",
             "description": "Type of Instagram post",
-            "enum": ["Image", "Video", "Sidecar"]
+            "template": "{{type}}"
         },
         "shortCode": {
             "title": "Short Code",
             "type": "string",
-            "description": "Instagram post shortcode (used in URLs)"
+            "description": "Instagram post shortcode",
+            "template": "{{shortCode}}"
         },
         "url": {
             "title": "Post URL",
             "type": "string",
-            "description": "Direct URL to the Instagram post"
+            "description": "Direct URL to the Instagram post",
+            "template": "{{url}}"
         },
         "timestamp": {
             "title": "Timestamp",
             "type": "string",
-            "description": "ISO 8601 timestamp when the post was created"
+            "description": "ISO 8601 timestamp when the post was created",
+            "template": "{{timestamp}}"
         },
         "caption": {
             "title": "Caption",
             "type": "string",
-            "description": "Post caption text"
-        },
-        "hashtags": {
-            "title": "Hashtags",
-            "type": "array",
-            "description": "Array of hashtags extracted from the caption",
-            "items": {
-                "type": "string"
-            }
-        },
-        "mentions": {
-            "title": "Mentions",
-            "type": "array",
-            "description": "Array of user mentions extracted from the caption",
-            "items": {
-                "type": "string"
-            }
+            "description": "Post caption text",
+            "template": "{{caption}}"
         },
         "likesCount": {
             "title": "Likes Count",
-            "type": "integer",
-            "description": "Number of likes on the post"
+            "type": "string",
+            "description": "Number of likes on the post",
+            "template": "{{likesCount}}"
         },
         "commentsCount": {
             "title": "Comments Count",
-            "type": "integer",
-            "description": "Number of comments on the post"
-        },
-        "videoViewCount": {
-            "title": "Video View Count",
-            "type": ["integer", "null"],
-            "description": "Number of video views (null for non-video posts)"
+            "type": "string",
+            "description": "Number of comments on the post",
+            "template": "{{commentsCount}}"
         },
         "displayUrl": {
             "title": "Display URL",
             "type": "string",
-            "description": "URL of the main display image"
+            "description": "URL of the main display image",
+            "template": "{{displayUrl}}"
         },
-        "images": {
-            "title": "Images",
-            "type": "array",
-            "description": "Array of image URLs for sidecar posts",
-            "items": {
-                "type": "string"
-            }
-        },
-        "videoUrl": {
-            "title": "Video URL",
-            "type": ["string", "null"],
-            "description": "URL of the video file (null for non-video posts)"
-        },
-        "videoDuration": {
-            "title": "Video Duration",
-            "type": ["number", "null"],
-            "description": "Duration of the video in seconds (null for non-video posts)"
-        },
-        "dimensions": {
-            "title": "Dimensions",
-            "type": "object",
-            "description": "Image/video dimensions",
-            "properties": {
-                "height": {
-                    "type": "integer"
-                },
-                "width": {
-                    "type": "integer"
-                }
-            }
-        },
-        "isSponsored": {
-            "title": "Is Sponsored",
-            "type": "boolean",
-            "description": "Whether the post is sponsored content"
-        },
-        "paidPartnership": {
-            "title": "Paid Partnership",
-            "type": "boolean",
-            "description": "Whether the post is a paid partnership"
-        },
-        "sponsors": {
-            "title": "Sponsors",
-            "type": "array",
-            "description": "Array of sponsor usernames",
-            "items": {
-                "type": "string"
-            }
-        },
-        "locationName": {
-            "title": "Location Name",
-            "type": ["string", "null"],
-            "description": "Name of the location tagged in the post"
-        },
-        "locationId": {
-            "title": "Location ID",
-            "type": ["string", "null"],
-            "description": "Instagram location ID"
-        },
-        "ownerUsername": {
-            "title": "Owner Username",
+        "username": {
+            "title": "Username",
             "type": "string",
-            "description": "Username of the post owner"
-        },
-        "ownerFullName": {
-            "title": "Owner Full Name",
-            "type": "string",
-            "description": "Full name of the post owner"
+            "description": "Username of the post owner",
+            "template": "{{username}}"
         },
         "inputUrl": {
             "title": "Input URL",
             "type": "string",
-            "description": "Original profile URL that was scraped"
+            "description": "Original profile URL that was scraped",
+            "template": "{{inputUrl}}"
         }
-    },
-    "required": [
-        "id",
-        "type",
-        "shortCode",
-        "url",
-        "timestamp",
-        "caption",
-        "hashtags",
-        "mentions",
-        "likesCount",
-        "commentsCount",
-        "displayUrl",
-        "images",
-        "dimensions",
-        "isSponsored",
-        "paidPartnership",
-        "sponsors",
-        "ownerUsername",
-        "ownerFullName",
-        "inputUrl"
-    ]
+    }
 }
