@@ -51,7 +51,7 @@ const sessionPoolOptions = {
         maxErrorScore: 3,
         errorScoreDecrement: 0.5
     },
-    persistStateKeyValueStoreId: 'INSTAGRAM_SESSION_STORE', // Match playbook naming
+    persistStateKeyValueStoreId: 'instagram-session-store', // Fixed: no underscores allowed in Apify store names
     persistStateKey: 'sessions'
 };
 
