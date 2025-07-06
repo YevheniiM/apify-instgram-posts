@@ -572,29 +572,28 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             const wwwClaim = userData?.wwwClaim || '0';
             const asbdId = userData?.asbdId || '129477';
 
-            // 🎯 CRITICAL: Ensure we have LSD token for this request
-            if (!session.userData.lsd) {
+            // 🎯 CRITICAL: Ensure we have fresh LSD token for this request
+            if (!session.userData.lsd || session.userData.lsdUntil < Date.now()) {
                 log.info(`🔑 Fetching LSD token for post ${shortcode}`);
                 const { getSharedLsd } = await import('./session-utils.js');
                 await getSharedLsd(session, log);
             }
 
-            log.info(`🔑 Post ${shortcode} using tokens: WWW-Claim="${wwwClaim}", ASBD-ID="${asbdId}" (from profile discovery)`);
+            log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'present' : 'missing'}" (from profile discovery)`);
 
+            // 🎯 PRODUCTION HEADERS: Clean headers that work with IG's current requirements
             const productionHeaders = {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'X-CSRFToken': cookieSet.cookies.csrftoken,
                 'X-IG-App-ID': '936619743392459', // Required anti-bot header
-                'X-ASBD-ID': asbdId, // Dynamic per-session token (March 2025+)
-                'X-IG-WWW-Claim': wwwClaim, // Dynamic per-session token (March 2025+)
-                'X-FB-LSD': session.userData.lsd || '', // 🎯 CRITICAL: Include LSD token
-                'X-Instagram-AJAX': '1',
-                'X-Requested-With': 'XMLHttpRequest',
+                'X-FB-LSD': session.userData.lsd || '', // 🎯 CRITICAL: LSD token for CSRF protection
+                'X-ASBD-ID': asbdId, // Dynamic per-session token
+                // 🎯 REMOVED: X-IG-WWW-Claim - better to omit than send "0"
                 'Cookie': Object.entries(cookieSet.cookies).map(([key, value]) => `${key}=${value}`).join('; '),
-                'Referer': `https://www.instagram.com/p/${shortcode}/` // 🎯 FIXED: Use post-specific referer
+                'Referer': `https://www.instagram.com/p/${shortcode}/`, // 🎯 CRITICAL: Post-specific referer
+                'Accept': '*/*',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty'
             };
 
             const timeout = 10000 + (attempt - 1) * 5000;
@@ -606,11 +605,16 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
                 maxRedirects: 2
             });
 
-            // Handle specific error cases that require retries
+            // 🎯 ENHANCED 401 HANDLING: Better retry logic with session rotation
             if (response.status === 401) {
                 if (attempt < maxRetries) {
-                    log.warning(`Post ${shortcode} unauthorized (attempt ${attempt}) - retrying with new session`);
+                    log.warning(`Post ${shortcode} unauthorized (attempt ${attempt}) - rotating cookies and session`);
                     cookieManager.markAsBlocked(cookieSet.id);
+
+                    // Apply smart delay for 401 errors (3-5s back-off)
+                    const backoffDelay = 3000 + Math.random() * 2000; // 3-5 seconds
+                    await new Promise(resolve => setTimeout(resolve, backoffDelay));
+
                     throw new Error(`Unauthorized - retry needed`);
                 }
                 return { shortcode, error: `HTTP 401 after ${maxRetries} attempts`, data: null };
