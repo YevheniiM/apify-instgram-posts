@@ -17,7 +17,7 @@
 // to avoid circular imports. They are defined in routes.js and post-router.js
 
 import { SHORTCODE_DOC_ID, TIMEOUTS } from './constants.js';
-import { refreshCsrfToken, ensureLsdToken } from './session-utils.js';
+import { refreshCsrfToken, ensureLsdToken, TokenRefresher } from './session-utils.js';
 
 // BEFORE – loose capture, grabs "rum-slate-t" etc.
 // AFTER – *exact* 11-char shortcode & validation helper
@@ -323,6 +323,9 @@ class RetryManager {
 export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log, session, cookieManager = null, throttling = null, options = {}) {
     log.info(`🚀 High-speed post discovery for ${username} (target: ${maxPosts} posts)`);
 
+    // 🎯 PRODUCTION: Initialize TokenRefresher for fresh tokens before every request
+    const tokenRefresher = new TokenRefresher(log);
+
     const shortcodes = [];
     let hasNextPage = true;
     let endCursor = null;
@@ -481,25 +484,23 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                     throw new Error('No guest cookie set available for session');
                 }
 
-                // Ensure tokens are fresh before making GraphQL calls
-                await cookieManager.ensureFreshTokens(guestCookieSet);
-
-                // 🎯 FIX: Get real LSD token using production-grade method
-                const { ensureLsdToken } = await import('./session-utils.js');
-                const lsdToken = await ensureLsdToken(session, log) || guestCookieSet.lsd || '';
+                // 🎯 PRODUCTION: Get fresh tokens using TokenRefresher (15-min TTL)
+                const { wwwClaim, asbdId, lsd } = await tokenRefresher.ensureFresh(session, guestCookieSet);
 
                 // 🎯 CRITICAL: Use GET endpoint like maintained actor (more reliable for 2025)
                 const graphqlUrl = new URL('https://www.instagram.com/graphql/query/');
                 graphqlUrl.searchParams.set('doc_id', IG_CONSTANTS.USER_TIMELINE_DOC_ID);
                 graphqlUrl.searchParams.set('variables', JSON.stringify(variables));
 
-                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
+                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsd ? 'present' : 'missing'})`);
 
-                // 🎯 NEW: Use guest cookie headers (no more hardcoded fallbacks!)
+                // 🎯 PRODUCTION: Build headers with fresh tokens from TokenRefresher
                 const headers = cookieManager.buildPublicHeaders(guestCookieSet);
 
-                // Override LSD token with fresh one
-                headers['X-FB-LSD'] = lsdToken;
+                // Apply fresh tokens with proper TTL management
+                headers['X-IG-WWW-Claim'] = wwwClaim;
+                headers['X-ASBD-ID'] = asbdId;
+                headers['X-FB-LSD'] = lsd;
 
                 // Set proper referer for this profile
                 headers['Referer'] = `https://www.instagram.com/${username}/`;
@@ -522,6 +523,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
                     // Rotate session and cookies like maintained actor
                     if (session && typeof session.retire === 'function') {
+                        tokenRefresher.clearTokens(session.id); // Clear cached tokens
                         session.retire();
                         log.info(`🔄 Session ${session.id} retired for Batch ${batchCount} for ${username}`);
                     }
@@ -627,6 +629,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
                     // Retire current session to get new IP + cookies
                     if (session && typeof session.retire === 'function') {
+                        tokenRefresher.clearTokens(session.id); // Clear cached tokens
                         session.retire();
                         session.userData = {}; // Clear stale tokens when rotating session
                         log.info(`🔄 Session retired, will continue with fresh session`);

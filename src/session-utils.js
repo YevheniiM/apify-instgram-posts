@@ -1,4 +1,171 @@
 import { Actor } from 'apify';
+import axios from 'axios';
+import crypto from 'crypto';
+
+// 🎯 PRODUCTION TOKEN MANAGER: Ensures fresh tokens before every request
+export class TokenRefresher {
+    constructor(log) {
+        this.log = log;
+        this.tokenCache = new Map(); // sessionId -> {wwwClaim, asbdId, lsd, expiresAt}
+    }
+
+    /**
+     * Ensure fresh tokens for a session - call before every GraphQL request
+     */
+    async ensureFresh(session, cookieSet) {
+        const sessionId = session.id;
+        const now = Date.now();
+
+        // Check if we have valid cached tokens
+        const cached = this.tokenCache.get(sessionId);
+        if (cached && cached.expiresAt > now) {
+            this.log.debug(`🔑 Using cached tokens for session ${sessionId}`);
+            return {
+                wwwClaim: cached.wwwClaim,
+                asbdId: cached.asbdId,
+                lsd: cached.lsd
+            };
+        }
+
+        this.log.info(`🔄 Refreshing tokens for session ${sessionId}`);
+
+        try {
+            // Method 1: Try HEAD request to profile for WWW-Claim and ASBD-ID
+            const headers = this.buildHeaders(cookieSet);
+            const headResponse = await axios.head('https://www.instagram.com/', {
+                headers,
+                timeout: 10000,
+                validateStatus: () => true
+            });
+
+            let wwwClaim = headResponse.headers['ig-set-www-claim'] || '0';
+            let asbdId = headResponse.headers['ig-set-asbd-id'] || '129477';
+
+            // Method 2: Try to get LSD token from manifest.json
+            let lsd = await this.fetchLSDToken(headers);
+
+            // Cache tokens with 15-minute TTL (conservative)
+            const expiresAt = now + (15 * 60 * 1000);
+            this.tokenCache.set(sessionId, {
+                wwwClaim,
+                asbdId,
+                lsd,
+                expiresAt
+            });
+
+            this.log.info(`✅ Refreshed tokens for session ${sessionId}: WWW-Claim="${wwwClaim}", ASBD-ID="${asbdId}", LSD="${lsd ? 'present' : 'missing'}"`);
+
+            return { wwwClaim, asbdId, lsd };
+
+        } catch (error) {
+            this.log.warning(`❌ Failed to refresh tokens for session ${sessionId}: ${error.message}`);
+
+            // Return fallback tokens
+            return {
+                wwwClaim: '0',
+                asbdId: '129477',
+                lsd: this.generateFallbackLSD()
+            };
+        }
+    }
+
+    /**
+     * Fetch LSD token from multiple sources
+     */
+    async fetchLSDToken(headers) {
+        // Try manifest.json first (most reliable)
+        try {
+            const manifestResponse = await axios.get('https://www.instagram.com/data/manifest.json', {
+                headers: {
+                    ...headers,
+                    'X-IG-App-ID': '936619743392459'
+                },
+                timeout: 10000
+            });
+
+            if (manifestResponse.data && manifestResponse.data.lsd) {
+                return manifestResponse.data.lsd;
+            }
+        } catch (error) {
+            this.log.debug(`Manifest.json LSD fetch failed: ${error.message}`);
+        }
+
+        // Try login page HTML as fallback
+        try {
+            const loginResponse = await axios.get('https://www.instagram.com/accounts/login/', {
+                headers,
+                timeout: 10000
+            });
+
+            const lsdMatch = loginResponse.data.match(/"LSD",\[\],\{"token":"([^"]+)"/);
+            if (lsdMatch) {
+                return lsdMatch[1];
+            }
+
+            // Alternative regex pattern
+            const lsdMatch2 = loginResponse.data.match(/name="lsd" value="([^"]+)"/);
+            if (lsdMatch2) {
+                return lsdMatch2[1];
+            }
+        } catch (error) {
+            this.log.debug(`Login page LSD fetch failed: ${error.message}`);
+        }
+
+        return null;
+    }
+
+    /**
+     * Generate cryptographically secure fallback LSD token
+     */
+    generateFallbackLSD() {
+        return crypto.randomBytes(20).toString('base64url');
+    }
+
+    /**
+     * Build headers for token refresh requests
+     */
+    buildHeaders(cookieSet) {
+        let cookies = '';
+
+        // Handle different cookie set formats
+        if (cookieSet) {
+            if (typeof cookieSet.getCookieString === 'function') {
+                // Standard cookie jar format
+                cookies = cookieSet.getCookieString('https://www.instagram.com');
+            } else if (cookieSet.cookies && Array.isArray(cookieSet.cookies)) {
+                // Guest cookie set format from GuestCookieManager
+                cookies = cookieSet.cookies.join('; ');
+            } else if (typeof cookieSet === 'string') {
+                // Direct cookie string
+                cookies = cookieSet;
+            }
+        }
+
+        return {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            ...(cookies && { 'Cookie': cookies })
+        };
+    }
+
+    /**
+     * Clear cached tokens for a session (call when session is retired)
+     */
+    clearTokens(sessionId) {
+        this.tokenCache.delete(sessionId);
+        this.log.debug(`🗑️ Cleared cached tokens for session ${sessionId}`);
+    }
+}
 
 // 🎯 GUEST COOKIE MANAGER: Production-ready cookie management for public Instagram scraping
 export class GuestCookieManager {
@@ -14,6 +181,9 @@ export class GuestCookieManager {
         if (!this.cookiePools.has(domain)) {
             await this.initializeCookiePool(domain);
         }
+
+        // Auto-unblock stale cookies if pool is running low
+        this.autoUnblockStaleBlocks();
 
         const pool = this.cookiePools.get(domain);
         if (!pool || pool.length === 0) {
@@ -35,7 +205,7 @@ export class GuestCookieManager {
         return selectedCookie;
     }
 
-    async initializeCookiePool(domain = 'instagram.com', poolSize = 5) {
+    async initializeCookiePool(domain = 'instagram.com', poolSize = 30) {
         this.log.info(`🚀 Initializing guest cookie factory for public Instagram scraping`);
         const cookies = [];
 
@@ -97,11 +267,70 @@ export class GuestCookieManager {
 
     blockCookieSet(cookieId) {
         this.blockedCookies.add(cookieId);
+
+        // Store blocked timestamp for auto-unblock logic
+        const cookieSet = this.findCookieSetById(cookieId);
+        if (cookieSet) {
+            cookieSet.blockedAt = Date.now();
+        }
+
         this.log.debug(`🚫 Blocked cookie set: ${cookieId}`);
     }
 
     isBlocked(cookieId) {
         return this.blockedCookies.has(cookieId);
+    }
+
+    /**
+     * Auto-unblock cookies after 30 minutes if pool is running low
+     */
+    autoUnblockStaleBlocks() {
+        const now = Date.now();
+        const unblockAfter = 30 * 60 * 1000; // 30 minutes
+        const minActiveJars = 10;
+
+        // Count active (non-blocked) jars
+        let activeJars = 0;
+        for (const [, pool] of this.cookiePools) {
+            activeJars += pool.filter(jar => !this.blockedCookies.has(jar.id)).length;
+        }
+
+        // Only auto-unblock if we're running low on active jars
+        if (activeJars < minActiveJars) {
+            const unblocked = [];
+
+            for (const [, pool] of this.cookiePools) {
+                for (const jar of pool) {
+                    if (this.blockedCookies.has(jar.id) && jar.blockedAt && (now - jar.blockedAt) > unblockAfter) {
+                        this.blockedCookies.delete(jar.id);
+                        delete jar.blockedAt;
+                        unblocked.push(jar.id);
+                    }
+                }
+            }
+
+            if (unblocked.length > 0) {
+                this.log.info(`🔓 Auto-unblocked ${unblocked.length} stale cookie sets: ${unblocked.join(', ')}`);
+            }
+        }
+    }
+
+    /**
+     * Find cookie set by ID across all domains
+     */
+    findCookieSetById(cookieSetId) {
+        for (const [, pool] of this.cookiePools) {
+            const found = pool.find(jar => jar.id === cookieSetId);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    /**
+     * Alias for compatibility with post-discovery.js
+     */
+    markCookieSetAsBlocked(cookieSetId) {
+        this.blockCookieSet(cookieSetId);
     }
 }
 
