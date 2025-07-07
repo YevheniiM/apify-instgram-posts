@@ -5,6 +5,7 @@ import axios from 'axios';
 import crypto from 'crypto';
 import { primeCsrf } from './session-utils.js';
 import { CookieManager } from './post-router.js';
+import { getUserIdViaNextData, getUserIdViaTopSearch, getUserIdViaAPIEnhanced } from './utils/user-id.js';
 
 // Create router for Phase 1: Profile Discovery (production session management)
 export const profileRouter = createCheerioRouter();
@@ -17,37 +18,11 @@ const MOBILE_PROFILE_API = 'https://i.instagram.com/api/v1/users/web_profile_inf
 
 /**
  * Returns user-id or null.  Automatically obeys the session / proxy setup.
+ * Enhanced with required headers for June 2025+ Instagram changes
  */
 export async function getUserIdViaAPI(username, session, log) {
-    try {
-        const headers = {
-            'User-Agent': 'Instagram 300.0.0.0 iOS',            // <- mobile UA avoids 403
-            'X-IG-App-ID': '936619743392459',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Accept': '*/*',
-        };
-
-        // Use the crawler's proxy & cookies
-        const cookieString = session.getCookieString('https://www.instagram.com');
-        if (cookieString) headers.Cookie = cookieString;
-
-        const resp = await axios.get(`${MOBILE_PROFILE_API}${username}`, {
-            headers,
-            proxy: false,                      // proxy is already injected by Cheerio
-            timeout: 10000,
-            validateStatus: s => s < 500,
-        });
-
-        if (resp.status !== 200 || !resp.data?.data?.user?.id) {
-            log.debug(`API fallback status ${resp.status} for ${username}`);
-            return null;
-        }
-        return resp.data.data.user.id;
-
-    } catch (err) {
-        log.debug(`API fallback error for ${username}: ${err.message}`);
-        return null;
-    }
+    // Use the enhanced version with proper headers
+    return await getUserIdViaAPIEnhanced(username, session, log);
 }
 
 // Initialize our custom cookie manager for guest cookies
@@ -136,37 +111,53 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         const postUrls = [];
         let profileData = null;
 
-        // Method 1: Extract user ID from Instagram page
+        // Method 1: Extract user ID using enhanced cascade approach (June 2025+ fix)
         let userId = null;
 
-        // Look for user ID in various places
-        const userIdPatterns = [
-            /"profilePage_(\d+)"/,
-            /"user_id":"(\d+)"/,
-            /"id":"(\d+)"/,
-            /profilePage_(\d+)/,
-            /"owner":{"id":"(\d+)"/
-        ];
+        //------------------------------------------------------------------
+        // 1) Fast-path: parse __NEXT_DATA__ (works for 95% of profiles)
+        userId = await getUserIdViaNextData(htmlContent);
+        if (userId) {
+            log.info(`✅ Found user ID via __NEXT_DATA__: ${userId}`);
+        }
 
-        for (const pattern of userIdPatterns) {
-            const match = htmlContent.match(pattern);
-            if (match) {
-                userId = match[1];
-                log.info(`Found user ID: ${userId} using pattern: ${pattern}`);
-                break;
+        // 2) Old regexes – keep them for safety
+        if (!userId) {
+            const userIdPatterns = [
+                /"profilePage_(\d+)"/,
+                /"user_id":"(\d+)"/,
+                /"id":"(\d+)"/,
+                /profilePage_(\d+)/,
+                /"owner":{"id":"(\d+)"/
+            ];
+
+            for (const pattern of userIdPatterns) {
+                const match = htmlContent.match(pattern);
+                if (match) {
+                    userId = match[1];
+                    log.info(`✅ Found user ID via regex pattern: ${userId}`);
+                    break;
+                }
             }
+        }
+
+        // 3) Mobile JSON API (now with mandatory headers)
+        if (!userId) {
+            log.info(`Trying mobile API fallback for ${username}`);
+            userId = await getUserIdViaAPI(username, session, log);
+        }
+
+        // 4) GUARANTEED fallback – top-search endpoint
+        if (!userId) {
+            log.info(`Trying top-search fallback for ${username}`);
+            userId = await getUserIdViaTopSearch(username, session, log);
         }
 
         if (!userId) {
-            // ⬇ NEW: try API fallback instead of quitting
-            log.warning(`Could not extract user ID for ${username} in HTML – trying API fallback`);
-            userId = await getUserIdViaAPI(username, session, log);
-            if (!userId) {
-                log.error(`❌ User ID fallback failed for ${username} – profile will be skipped`);
-                return;
-            }
-            log.info(`✅ Fallback succeeded – user ID for ${username}: ${userId}`);
+            log.error(`❌ Still no user-id for ${username} – giving up`);
+            return;
         }
+        //------------------------------------------------------------------
 
         // Generate rank_token for mobile API pagination
         session.userData.rankToken = `${crypto.randomUUID()}_${userId}`;
