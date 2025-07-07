@@ -442,7 +442,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 const batchSize = 50; // Increase batch size for better efficiency while staying under Instagram's limits
 
                 // Use GET endpoint to sidestep LSD requirement (as per your suggestion)
-                const graphqlUrl = 'https://www.instagram.com/graphql/query/';
+                const baseGraphqlUrl = 'https://www.instagram.com/graphql/query/';
 
                 // Apply throttling before batch request if available
                 if (session && activeThrottling && typeof activeThrottling.applySmartDelay === 'function') {
@@ -488,14 +488,12 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 const { ensureLsdToken } = await import('./session-utils.js');
                 const lsdToken = await ensureLsdToken(session, log) || guestCookieSet.lsd || '';
 
-                // 🔴 CRITICAL: Build POST payload (more reliable than GET for cloud IPs)
-                const payload = new URLSearchParams({
-                    doc_id: IG_CONSTANTS.USER_TIMELINE_DOC_ID,  // ✅ Updated July 2025 timeline doc_id
-                    variables: JSON.stringify(variables),
-                    lsd: lsdToken
-                });
+                // 🎯 CRITICAL: Use GET endpoint like maintained actor (more reliable for 2025)
+                const graphqlUrl = new URL('https://www.instagram.com/graphql/query/');
+                graphqlUrl.searchParams.set('doc_id', IG_CONSTANTS.USER_TIMELINE_DOC_ID);
+                graphqlUrl.searchParams.set('variables', JSON.stringify(variables));
 
-                log.info(`📡 GraphQL POST batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
+                log.info(`📡 GraphQL GET batch ${batchCount}: ${batchSize} posts (attempt ${attempt}, LSD: ${lsdToken ? 'present' : 'missing'})`);
 
                 // 🎯 NEW: Use guest cookie headers (no more hardcoded fallbacks!)
                 const headers = cookieManager.buildPublicHeaders(guestCookieSet);
@@ -510,20 +508,38 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 log.debug('GraphQL Request Headers:', JSON.stringify(headers, null, 2));
                 log.debug('Guest cookie jar ID:', guestCookieSet.id);
 
-                // 🔴 CRITICAL: Use POST instead of GET (more reliable for cloud IPs)
-                const response = await axios.post(graphqlUrl, payload, {
+                // 🎯 PRODUCTION: Use GET to /graphql/query/ (same as maintained actor)
+                const response = await axios.get(graphqlUrl.toString(), {
                     headers,
                     timeout,
                     validateStatus: (status) => status < 500 // Handle 4xx errors manually
                 });
 
-                // Handle specific error cases
-                if (response.status === 401) {
-                    throw new Error(`Unauthorized access to posts for ${username} - session rotation needed`);
-                }
+                // Handle specific error cases with improved session rotation
+                if (response.status === 401 || response.status === 403) {
+                    // This is the key pattern from maintained actor: "Request blocked, retrying with different session"
+                    log.warning(`❌ Batch ${batchCount} for ${username} failed on attempt ${attempt}: Request blocked, retrying with different session`);
 
-                if (response.status === 403) {
-                    throw new Error(`Forbidden access to posts for ${username} - IP or session blocked`);
+                    // Rotate session and cookies like maintained actor
+                    if (session && typeof session.retire === 'function') {
+                        session.retire();
+                        log.info(`🔄 Session ${session.id} retired for Batch ${batchCount} for ${username}`);
+                    }
+
+                    // Rotate cookies
+                    if (cookieManager && typeof cookieManager.markCookieSetAsBlocked === 'function') {
+                        cookieManager.markCookieSetAsBlocked(guestCookieSet.id);
+                        log.info(`🍪 Cookie set ${guestCookieSet.id} marked as blocked`);
+
+                        // Get new cookie set for retry
+                        const newCookieSet = cookieManager.getCookieSet();
+                        if (newCookieSet) {
+                            guestCookieSet = newCookieSet;
+                            log.info(`🍪 Using new cookie set ${guestCookieSet.id} for retry`);
+                        }
+                    }
+
+                    throw new Error(`Request blocked, retrying with different session`);
                 }
 
                 if (response.status === 429) {
