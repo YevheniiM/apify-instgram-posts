@@ -263,7 +263,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         // 🎯 FIXED: Use our custom guest cookie manager instead of Crawlee's built-in one
         const shortcodes = await discoverPosts(username, {
             maxPosts: targetPostCount,
-            methods: ['directapi'], // Use our enhanced direct API method with dynamic tokens
+            methods: ['mobileapi', 'directapi'], // Try mobile API first, then enhanced direct API
             fallbackToKnown: true,
             prefetchedUserId: userId
         }, log, session, guestCookieManager, throttling);

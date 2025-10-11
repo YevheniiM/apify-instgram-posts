@@ -763,6 +763,9 @@ export async function discoverPosts(username, options = {}, log, session, cookie
             let shortcodes = [];
 
             switch (method) {
+                case 'mobileapi':
+                    shortcodes = await discoverPostsViaAlternativeAPI(username, maxPosts, log, session);
+                    break;
                 case 'directapi':
                     shortcodes = await discoverPostsWithDirectAPI(username, maxPosts, log, session, cookieManager, throttling, options);
                     break;
@@ -1177,7 +1180,8 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null)
                     'X-IG-App-ID': '936619743392459',
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'X-Requested-With': 'XMLHttpRequest'
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(session?.getCookieString && session.getCookieString('https://www.instagram.com') ? { 'Cookie': session.getCookieString('https://www.instagram.com') } : {})
                 },
                 timeout: 8000,
                 validateStatus: (status) => status < 500
