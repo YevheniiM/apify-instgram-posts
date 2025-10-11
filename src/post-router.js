@@ -664,15 +664,9 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
                     'Sec-Fetch-Mode': 'cors',
                     'Sec-Fetch-Dest': 'empty',
                 };
-                // If we have a non-zero claim, include it on all variants
-                if (wwwClaim && String(wwwClaim) !== '0') {
-                    headers['X-IG-WWW-Claim'] = String(wwwClaim);
-                }
+                // Do NOT send X-IG-WWW-Claim for single post requests (2025 mitigation)
                 if (variant === 'base') {
                     headers['X-FB-LSD'] = lsdToken;
-                }
-                if (variant === 'no_lsd_claim' || variant === 'no_lsd_claim_csrf' || variant === 'no_lsd_claim_csrf_client_hints') {
-                    headers['X-IG-WWW-Claim'] = String(wwwClaim || '0');
                 }
                 if (variant === 'no_lsd_claim_csrf' || variant === 'no_lsd_claim_csrf_client_hints') {
                     if (hasCsrf) headers['x-csrftoken'] = csrf;
@@ -687,11 +681,11 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             };
 
             let variant;
-            if (attempt === 1) variant = 'base';
-            else if (attempt === 2) variant = 'no_lsd';
+            if (attempt === 1) variant = 'no_lsd_claim_csrf_client_hints';
+            else if (attempt === 2) variant = 'no_lsd_claim_csrf';
             else if (attempt === 3) variant = 'no_lsd_claim';
-            else if (attempt === 4) variant = 'no_lsd_claim_csrf';
-            else variant = 'no_lsd_claim_csrf_client_hints';
+            else if (attempt === 4) variant = 'no_lsd';
+            else variant = 'base';
 
             if (variantStats[variant]) variantStats[variant].attempts++;
 
