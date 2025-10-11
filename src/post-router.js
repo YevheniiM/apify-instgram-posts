@@ -845,23 +845,23 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
         return;
     }
 
-    // Use production GraphQL API for post extraction with dynamic tokens
+    // Prefer mobile API first (2025): higher success than GraphQL on cloud IPs
+    try {
+        const mobileData = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, session);
+        if (mobileData) {
+            await Dataset.pushData(mobileData);
+            log.info(`Successfully extracted post via Mobile API: ${shortcode}`);
+            return;
+        }
+    } catch (e) {
+        log.debug(`Mobile API primary attempt failed for ${shortcode}: ${e.message}`);
+    }
+
+    // Fallback 2: GraphQL single-post endpoint (try header variants)
     let postResult = await extractSinglePostViaGraphQL(shortcode, username, originalUrl, log, session, request.userData);
 
     if (!(postResult && postResult.data)) {
-        // GraphQL failed — attempt mobile API fallback
-        try {
-            const mobileData = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, session);
-            if (mobileData) {
-                await Dataset.pushData(mobileData);
-                log.info(`Successfully extracted post via Mobile API: ${shortcode}`);
-                return;
-            }
-        } catch (e) {
-            log.debug(`Mobile API fallback failed for ${shortcode}: ${e.message}`);
-        }
-
-        // As a last resort, try HTML parsing
+        // Fallback 3: HTML parsing
         try {
             const htmlData = await extractPostViaHTML(shortcode, username, originalUrl, log, session);
             if (htmlData) {
@@ -876,7 +876,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
 
     if (postResult && postResult.data) {
         await Dataset.pushData(postResult.data);
-        log.info(`Successfully extracted post: ${shortcode}`);
+        log.info(`Successfully extracted post via GraphQL: ${shortcode}`);
     } else {
         log.warning(`Failed to extract post: ${shortcode}`);
     }
