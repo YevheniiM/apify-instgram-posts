@@ -1247,7 +1247,7 @@ async function extractPostViaHTML(shortcode, username, originalUrl, log, session
     const cheerio = (await import('cheerio')).default;
 
     const url = `https://www.instagram.com/p/${shortcode}/`;
-    const cookieSet = cookieManager.getCookiesForRequest();
+    const cookieSet = await cookieManager.getCookieSet(session);
 
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
