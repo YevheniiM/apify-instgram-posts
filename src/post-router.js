@@ -852,10 +852,36 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     }
 
     // Use production GraphQL API for post extraction with dynamic tokens
-    const postData = await extractSinglePostViaGraphQL(shortcode, username, originalUrl, log, session, request.userData);
+    let postResult = await extractSinglePostViaGraphQL(shortcode, username, originalUrl, log, session, request.userData);
 
-    if (postData && postData.data) {
-        await Dataset.pushData(postData.data);
+    if (!(postResult && postResult.data)) {
+        // GraphQL failed — attempt mobile API fallback
+        try {
+            const mobileData = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, session);
+            if (mobileData) {
+                await Dataset.pushData(mobileData);
+                log.info(`Successfully extracted post via Mobile API: ${shortcode}`);
+                return;
+            }
+        } catch (e) {
+            log.debug(`Mobile API fallback failed for ${shortcode}: ${e.message}`);
+        }
+
+        // As a last resort, try HTML parsing
+        try {
+            const htmlData = await extractPostViaHTML(shortcode, username, originalUrl, log, session);
+            if (htmlData) {
+                await Dataset.pushData(htmlData);
+                log.info(`Successfully extracted post via HTML: ${shortcode}`);
+                return;
+            }
+        } catch (e) {
+            log.debug(`HTML fallback failed for ${shortcode}: ${e.message}`);
+        }
+    }
+
+    if (postResult && postResult.data) {
+        await Dataset.pushData(postResult.data);
         log.info(`Successfully extracted post: ${shortcode}`);
     } else {
         log.warning(`Failed to extract post: ${shortcode}`);
@@ -1162,6 +1188,120 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
         // Wait for all batch requests to complete
         const batchResults = await Promise.allSettled(batchPromises);
+
+
+// Lightweight helper to build Cookie header from cookie map
+function buildCookieHeader(cookies) {
+    if (!cookies) return '';
+    if (typeof cookies === 'string') return cookies;
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+// Fallback 1: Mobile API post extraction
+async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, session) {
+    const axios = (await import('axios')).default;
+
+    // Build endpoint for mobile API by shortcode
+    // Known mobile path returns JSON with items[0]
+    const url = `https://i.instagram.com/api/v1/media/shortcode/${shortcode}/`;
+
+    const cookieSet = cookieManager.getCookiesForRequest();
+    const headers = {
+        'User-Agent': 'Instagram 300.0.0.0 iOS',
+        'X-IG-App-ID': '936619743392459',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': `https://www.instagram.com/p/${shortcode}/`,
+        ...(cookieSet?.cookies ? { 'Cookie': buildCookieHeader(cookieSet.cookies) } : {})
+    };
+
+    const resp = await axios.get(url, { headers, timeout: 15000, validateStatus: s => s < 500 });
+    if (resp.status !== 200 || !resp.data) return null;
+
+    const data = resp.data;
+    const item = data.items?.[0] || data.item || data.media;
+    if (!item) return null;
+
+    // Map minimal fields for compatibility
+    const takenAt = item.taken_at || item.taken_at_timestamp || item.caption?.created_at;
+    const tsIso = takenAt ? new Date(takenAt * 1000).toISOString() : undefined;
+
+    return {
+        id: item.id || item.pk,
+        type: item.media_type === 2 ? 'Video' : (item.carousel_media ? 'Sidecar' : 'Image'),
+        shortCode: shortcode,
+        url: `https://www.instagram.com/p/${shortcode}/`,
+        timestamp: tsIso,
+        caption: item.caption?.text || '',
+        likesCount: item.like_count ?? item.edge_liked_by?.count ?? null,
+        commentsCount: item.comment_count ?? item.edge_media_to_comment?.count ?? null,
+        ownerUsername: username,
+        isCommercialContent: !!item.is_paid_partnership,
+    };
+}
+
+// Fallback 2: HTML parsing of post page to extract __NEXT_DATA__ JSON
+async function extractPostViaHTML(shortcode, username, originalUrl, log, session) {
+    const axios = (await import('axios')).default;
+    const cheerio = (await import('cheerio')).default;
+
+    const url = `https://www.instagram.com/p/${shortcode}/`;
+    const cookieSet = cookieManager.getCookiesForRequest();
+
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': `https://www.instagram.com/`,
+        ...(cookieSet?.cookies ? { 'Cookie': buildCookieHeader(cookieSet.cookies) } : {})
+    };
+
+    const resp = await axios.get(url, { headers, timeout: 15000, validateStatus: s => s < 500 });
+    if (resp.status !== 200 || !resp.data || typeof resp.data !== 'string') return null;
+
+    const $ = cheerio.load(resp.data);
+
+    // Try to locate embedded JSON
+    let jsonText = '';
+    // Newer IG sometimes embeds JSON in script[type="application/json"][id="__NEXT_DATA__"]
+    const nextData = $('script[type="application/json"]#__NEXT_DATA__').first().text();
+    if (nextData) jsonText = nextData;
+    if (!jsonText) {
+        // Fallback: search for any script tag with "shortcode" inside
+        $('script').each((_, el) => {
+            const t = $(el).text();
+            if (!jsonText && t && t.includes('shortcode')) jsonText = t;
+        });
+    }
+    if (!jsonText) return null;
+
+    let obj;
+    try { obj = JSON.parse(jsonText); } catch (_) { return null; }
+
+    // Heuristic paths to media
+    const media = obj?.props?.pageProps?.postPage?.media
+        || obj?.props?.pageProps?.graphql?.shortcode_media
+        || obj?.data?.xdt_shortcode_media
+        || null;
+    if (!media) return null;
+
+    const ts = media.taken_at_timestamp || media.taken_at || media.takenAt;
+    const tsIso = ts ? new Date(ts * 1000).toISOString() : undefined;
+
+    return {
+        id: media.id,
+        type: media.__typename === 'XDTGraphVideo' ? 'Video' : (media.edge_sidecar_to_children ? 'Sidecar' : 'Image'),
+        shortCode: shortcode,
+        url: `https://www.instagram.com/p/${shortcode}/`,
+        timestamp: tsIso,
+        caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption?.text || '',
+        likesCount: media.edge_media_preview_like?.count ?? media.like_count ?? null,
+        commentsCount: media.edge_media_to_comment?.count ?? media.comment_count ?? null,
+        ownerUsername: username,
+        isCommercialContent: !!media.is_paid_partnership,
+    };
+}
 
         // Process results
         let successCount = 0;
