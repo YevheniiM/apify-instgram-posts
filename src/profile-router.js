@@ -193,8 +193,9 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         // Determine target post count: use maxPosts if specified, otherwise use actual count, fallback to unlimited
         let targetPostCount;
         if (maxPosts && maxPosts > 0) {
-            targetPostCount = maxPosts;
-            log.info(`Using specified maxPosts limit: ${targetPostCount}`);
+            // Prefer the smaller of maxPosts and actualPostCount (if known) to avoid over-discovery
+            targetPostCount = (actualPostCount && actualPostCount > 0) ? Math.min(maxPosts, actualPostCount) : maxPosts;
+            log.info(`Using target post count: ${targetPostCount} (maxPosts=${maxPosts}${actualPostCount ? `, actual=${actualPostCount}` : ''})`);
         } else if (actualPostCount && actualPostCount > 0) {
             targetPostCount = actualPostCount;
             log.info(`Using actual profile post count: ${targetPostCount} (extracting ALL posts)`);
