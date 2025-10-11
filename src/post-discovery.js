@@ -764,7 +764,7 @@ export async function discoverPosts(username, options = {}, log, session, cookie
 
             switch (method) {
                 case 'mobileapi':
-                    shortcodes = await discoverPostsViaAlternativeAPI(username, maxPosts, log, session);
+                    shortcodes = await discoverPostsViaAlternativeAPI(username, maxPosts, log, session, cookieManager);
                     break;
                 case 'directapi':
                     shortcodes = await discoverPostsWithDirectAPI(username, maxPosts, log, session, cookieManager, throttling, options);
@@ -839,7 +839,7 @@ export async function discoverPosts(username, options = {}, log, session, cookie
                 log.info(`🔄 Fallback 2: Alternative API endpoints for ${username}`);
                 const retryManager = new RetryManager(log, session, cookieManager, throttling);
                 const altShortcodes = await retryManager.executeWithRetry(async () => {
-                    return await discoverPostsViaAlternativeAPI(username, maxPosts, log, session);
+                    return await discoverPostsViaAlternativeAPI(username, maxPosts, log, session, cookieManager);
                 }, `Alternative API for ${username}`);
 
                 if (altShortcodes.length > 0) {
@@ -1010,7 +1010,7 @@ export async function discoverPostsViaHTMLParsing(username, maxPosts = 12, log) 
 }
 
 // Enhanced Fallback Method: Alternative API Endpoints with Pagination Support
-export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000, log, session) {
+export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000, log, session, cookieManager = null) {
     log.info(`🔄 Fallback 3: Alternative API endpoints for ${username} (target: ${maxPosts} posts)`);
 
     let shortcodes = [];
@@ -1038,7 +1038,7 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
         }
 
         if (userId) {
-            shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log, session);
+            shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log, session, cookieManager);
             if (shortcodes.length > 0) {
                 log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
 
@@ -1153,7 +1153,7 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
 }
 
 // Mobile API with pagination support
-async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null) {
+async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null, cookieManager = null) {
     const shortcodes = [];
     let hasNextPage = true;
     let maxId = null;
@@ -1180,7 +1180,7 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null)
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'X-Requested-With': 'XMLHttpRequest',
-                    ...(session?.getCookieString && session.getCookieString('https://www.instagram.com') ? { 'Cookie': session.getCookieString('https://www.instagram.com') } : {})
+                    ...(cookieManager ? (() => { const cs = cookieManager.getCookiesForRequest(); return cs?.cookies ? { 'Cookie': Object.entries(cs.cookies).map(([k,v])=>`${k}=${v}`).join('; ') } : {}; })() : {})
                 },
                 timeout: 8000,
                 validateStatus: (status) => status < 500
