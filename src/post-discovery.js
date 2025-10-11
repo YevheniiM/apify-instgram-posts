@@ -1173,6 +1173,7 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
             });
             apiUrl += `?${params}`;
 
+            const cs = cookieManager ? await cookieManager.getCookieSet(session) : null;
             const response = await axios.get(apiUrl, {
                 headers: {
                     'User-Agent': 'Instagram 300.0.0.0 iOS',
@@ -1180,7 +1181,7 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'X-Requested-With': 'XMLHttpRequest',
-                    ...(cookieManager ? (() => { const cs = cookieManager.getCookiesForRequest(); return cs?.cookies ? { 'Cookie': Object.entries(cs.cookies).map(([k,v])=>`${k}=${v}`).join('; ') } : {}; })() : {})
+                    ...(cs?.cookies ? { 'Cookie': Object.entries(cs.cookies).map(([k,v])=>`${k}=${v}`).join('; ') } : {})
                 },
                 timeout: 8000,
                 validateStatus: (status) => status < 500
