@@ -370,6 +370,13 @@ export class CookieManager {
         return leastUsed;
     }
 
+    // Convenience: always return an authenticated cookie set if present, without rotation
+    getAuthenticatedCookieSet() {
+        const authSets = Array.from(this.cookiePools.values()).filter(cs => !cs.blocked && cs.cookies && cs.cookies.sessionid);
+        if (authSets.length > 0) return authSets[0];
+        return null;
+    }
+
     async loadRealCookies() {
         const realCookies = [];
 
@@ -601,7 +608,7 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
     const axios = (await import('axios')).default;
     const maxRetries = 5;
 
-    const cookieSet = cookieManager.getCookiesForRequest();
+    const cookieSet = await cookieManager.getCookieSet(session);
     if (!cookieSet) {
         return { shortcode, error: 'No available cookies', data: null };
     }
