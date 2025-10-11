@@ -1199,7 +1199,8 @@ async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, se
     // Known mobile path returns JSON with items[0]
     const url = `https://i.instagram.com/api/v1/media/shortcode/${shortcode}/`;
 
-    const cookieSet = cookieManager.getCookiesForRequest();
+    const cookieSet = await cookieManager.getCookieSet(session);
+    log.debug(`Mobile API attempt for ${shortcode} using cookieSet=${cookieSet?.id || 'none'} (auth=${cookieSet?.cookies?.sessionid ? 'yes' : 'no'})`);
     const headers = {
         'User-Agent': 'Instagram 300.0.0.0 iOS',
         'X-IG-App-ID': '936619743392459',
@@ -1211,6 +1212,11 @@ async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, se
     };
 
     const resp = await axios.get(url, { headers, timeout: 15000, validateStatus: s => s < 500 });
+    if (resp.status === 401) {
+        if (cookieSet?.id) cookieManager.markAsBlocked(cookieSet.id);
+        try { session.retire(); } catch (_) {}
+        return null;
+    }
     if (resp.status !== 200 || !resp.data) return null;
 
     const data = resp.data;
