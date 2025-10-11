@@ -373,7 +373,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
         const timeout = 10000 * Math.pow(RETRY_CONFIG.timeoutMultiplier, attempt - 1);
 
         // 🎉 NEW: Get guest cookie set for profile discovery
-        const guestCookieSet = await cookieManager.getCookieSet(session);
+        let guestCookieSet = await cookieManager.getCookieSet(session);
         if (!guestCookieSet) {
             throw new Error('No guest cookie set available for profile discovery');
         }
@@ -528,16 +528,28 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                         log.info(`🔄 Session ${session.id} retired for Batch ${batchCount} for ${username}`);
                     }
 
-                    // Rotate cookies
-                    if (cookieManager && typeof cookieManager.markCookieSetAsBlocked === 'function') {
-                        cookieManager.markCookieSetAsBlocked(guestCookieSet.id);
-                        log.info(`🍪 Cookie set ${guestCookieSet.id} marked as blocked`);
+                    // Rotate cookies (support both CookieManager APIs)
+                    if (cookieManager) {
+                        try {
+                            if (typeof cookieManager.markCookieSetAsBlocked === 'function') {
+                                cookieManager.markCookieSetAsBlocked(guestCookieSet.id);
+                            } else if (typeof cookieManager.markAsBlocked === 'function') {
+                                cookieManager.markAsBlocked(guestCookieSet.id);
+                            }
+                            log.info(`🍪 Cookie set ${guestCookieSet.id} marked as blocked`);
+                        } catch (e) {
+                            log.debug(`Cookie block mark failed: ${e.message}`);
+                        }
 
                         // Get new cookie set for retry
-                        const newCookieSet = cookieManager.getCookieSet();
-                        if (newCookieSet) {
-                            guestCookieSet = newCookieSet;
-                            log.info(`🍪 Using new cookie set ${guestCookieSet.id} for retry`);
+                        try {
+                            const newCookieSet = await cookieManager.getCookieSet(session);
+                            if (newCookieSet) {
+                                guestCookieSet = newCookieSet;
+                                log.info(`🍪 Using new cookie set ${guestCookieSet.id} for retry`);
+                            }
+                        } catch (e) {
+                            log.debug(`Cookie rotation failed: ${e.message}`);
                         }
                     }
 
