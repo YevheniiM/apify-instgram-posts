@@ -444,7 +444,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
             let batchResult;
                 try {
                     batchResult = await retryManager.executeWithRetry(async (attempt) => {
-                const batchSize = 50; // Increase batch size for better efficiency while staying under Instagram's limits
+                const batchSize = 12; // Smaller batch size to reduce block probability under 2025 anti-bot
 
                 // Use GET endpoint to sidestep LSD requirement (as per your suggestion)
                 const baseGraphqlUrl = 'https://www.instagram.com/graphql/query/';
@@ -682,7 +682,7 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
 
             // Smart delay between batches (200-500ms for speed)
             if (shortcodes.length < maxPosts) {
-                const delay = 200 + Math.random() * 300;
+                const delay = 2000 + Math.random() * 3000;
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
         }

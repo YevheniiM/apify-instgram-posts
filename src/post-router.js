@@ -355,8 +355,12 @@ export class CookieManager {
             }
         }
 
+        // Prefer authenticated cookie sets (with sessionid) when available
+        const authSets = availableCookieSets.filter(cs => cs.cookies && typeof cs.cookies === 'object' && cs.cookies.sessionid);
+        const pool = authSets.length > 0 ? authSets : availableCookieSets;
+
         // Simple round-robin selection based on usage
-        const leastUsed = availableCookieSets.reduce((min, current) =>
+        const leastUsed = pool.reduce((min, current) =>
             current.usage < min.usage ? current : min
         );
 

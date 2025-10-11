@@ -32,7 +32,8 @@ export class TokenRefresher {
         try {
             // Method 1: Try HEAD request to profile for WWW-Claim and ASBD-ID
             const headers = this.buildHeaders(cookieSet);
-            const headResponse = await axios.head('https://www.instagram.com/', {
+            // Use GET instead of HEAD to increase chances IG returns dynamic headers (www-claim/asbd-id)
+            const headResponse = await axios.get('https://www.instagram.com/', {
                 headers,
                 timeout: 10000,
                 validateStatus: () => true
@@ -170,8 +171,11 @@ export class TokenRefresher {
                 // Standard cookie jar format
                 cookies = cookieSet.getCookieString('https://www.instagram.com');
             } else if (cookieSet.cookies && Array.isArray(cookieSet.cookies)) {
-                // Guest cookie set format from GuestCookieManager
-                cookies = cookieSet.cookies.join('; ');
+                // Guest cookie set format from GuestCookieManager (array of Set-Cookie strings)
+                cookies = cookieSet.cookies.map(c => c.split(';')[0]).join('; ');
+            } else if (cookieSet.cookies && typeof cookieSet.cookies === 'object') {
+                // CookieManager pool format (object map)
+                cookies = Object.entries(cookieSet.cookies).map(([k, v]) => `${k}=${v}`).join('; ');
             } else if (typeof cookieSet === 'string') {
                 // Direct cookie string
                 cookies = cookieSet;
@@ -191,6 +195,7 @@ export class TokenRefresher {
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
             'Cache-Control': 'max-age=0',
+            'X-IG-App-ID': '936619743392459',
             ...(cookies && { 'Cookie': cookies })
         };
     }
