@@ -38,8 +38,16 @@ export class TokenRefresher {
                 validateStatus: () => true
             });
 
-            let wwwClaim = headResponse.headers['ig-set-www-claim'] || '0';
-            let asbdId = headResponse.headers['ig-set-asbd-id'] || '129477';
+            let wwwClaim = headResponse.headers['x-ig-set-www-claim'] || headResponse.headers['ig-set-www-claim'] || '0';
+            let asbdId = headResponse.headers['x-ig-set-asbd-id'] || headResponse.headers['ig-set-asbd-id'] || '129477';
+
+
+            // If claim is still '0', try login ajax endpoint to get real claim
+            if (wwwClaim === '0') {
+                const { wwwClaim: wc2, asbdId: asbd2 } = await this.fetchWWWClaimViaLogin(cookieSet);
+                if (wc2) wwwClaim = wc2;
+                if (asbd2) asbdId = asbd2;
+            }
 
             // Method 2: Try to get LSD token from manifest.json
             let lsd = await this.fetchLSDToken(headers);
@@ -59,7 +67,6 @@ export class TokenRefresher {
 
         } catch (error) {
             this.log.warning(`❌ Failed to refresh tokens for session ${sessionId}: ${error.message}`);
-
             // Return fallback tokens
             return {
                 wwwClaim: '0',
@@ -68,6 +75,36 @@ export class TokenRefresher {
             };
         }
     }
+
+    /**
+     * Attempt to obtain WWW-Claim/ASBD-ID via login ajax endpoint headers
+     */
+    async fetchWWWClaimViaLogin(cookieSet) {
+        try {
+            const axios = (await import('axios')).default;
+            const cookieStr = this.buildHeaders(cookieSet)['Cookie'] || '';
+            const resp = await axios.get('https://www.instagram.com/api/v1/web/accounts/login/ajax/', {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-IG-App-ID': '936619743392459',
+                    'Referer': 'https://www.instagram.com/accounts/login/',
+                    ...(cookieStr ? { 'Cookie': cookieStr } : {}),
+                },
+                timeout: 10000,
+                validateStatus: () => true,
+            });
+
+            const wwwClaim = resp.headers['x-ig-set-www-claim'] || resp.headers['ig-set-www-claim'] || null;
+            const asbdId = resp.headers['x-ig-set-asbd-id'] || resp.headers['ig-set-asbd-id'] || null;
+            return { wwwClaim, asbdId };
+        } catch (e) {
+            this.log.debug(`WWW-Claim via login ajax failed: ${e.message}`);
+            return { wwwClaim: null, asbdId: null };
+        }
+    }
+
 
     /**
      * Fetch LSD token from multiple sources
@@ -201,7 +238,7 @@ export class GuestCookieManager {
 
         const selectedCookie = sortedCookies[0];
         this.cookieUsage.set(selectedCookie.id, (this.cookieUsage.get(selectedCookie.id) || 0) + 1);
-        
+
         return selectedCookie;
     }
 
@@ -230,7 +267,7 @@ export class GuestCookieManager {
 
     async createGuestCookieSet(domain = 'instagram.com') {
         const axios = (await import('axios')).default;
-        
+
         try {
             const response = await axios.get('https://www.instagram.com/', {
                 headers: {
@@ -342,16 +379,16 @@ export async function fetchFreshLsd(session, log) {
     }
 
     const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
-    
+
     // Node 18 ESM/CJS friendly axios import
     const axiosOrig = (await import('axios')).default;
     const axios = axiosOrig?.default ? axiosOrig.default : axiosOrig;
 
     const cookie = session.getCookieString('https://www.instagram.com') || '';
-    const common = { 
+    const common = {
         headers: { 'User-Agent': UA, Cookie: cookie },
         timeout: 8000,      // 8s per shot
-        validateStatus: s => s < 500 
+        validateStatus: s => s < 500
     };
 
     // Updated regex patterns for June 2025+ Instagram changes
@@ -380,11 +417,11 @@ export async function fetchFreshLsd(session, log) {
     for (const src of sources) {
         try {
             log.debug(`[LSD-FETCH] ${src.note} → ${src.url}`);
-            
-            const requestConfig = src.json ? 
+
+            const requestConfig = src.json ?
                 { ...common, responseType: 'json', headers: { ...common.headers, Accept: 'application/json' } } :
                 common;
-                
+
             const resp = await axios.get(src.url, requestConfig);
             const body = src.json ? resp.data : String(resp.data);
             const token = src.hunt(body);
@@ -444,11 +481,11 @@ export function extractTokensFromResponse(response, log) {
 
     try {
         // Extract from headers
-        if (response.headers['ig-set-www-claim']) {
-            tokens.wwwClaim = response.headers['ig-set-www-claim'];
+        if (response.headers['x-ig-set-www-claim'] || response.headers['ig-set-www-claim']) {
+            tokens.wwwClaim = response.headers['x-ig-set-www-claim'] || response.headers['ig-set-www-claim'];
         }
-        if (response.headers['ig-set-asbd-id']) {
-            tokens.asbdId = response.headers['ig-set-asbd-id'];
+        if (response.headers['x-ig-set-asbd-id'] || response.headers['ig-set-asbd-id']) {
+            tokens.asbdId = response.headers['x-ig-set-asbd-id'] || response.headers['ig-set-asbd-id'];
         }
 
         // Extract LSD from HTML content

@@ -82,7 +82,8 @@ export class CookieManager {
         console.log(`🚀 Initializing guest cookie factory for public Instagram scraping`);
 
         // Create guest cookie jars for each proxy/session
-        const guestCookieCount = 5; // Start with 5 guest jars, can scale up
+        const guestCookieCount = 10; // Increased to 10 guest jars for stricter cloud anti-bot
+
 
         for (let i = 1; i <= guestCookieCount; i++) {
             try {
@@ -155,9 +156,9 @@ export class CookieManager {
                 }
             });
 
-            // Step 3: Extract dynamic headers
-            const wwwClaim = response.headers['ig-set-www-claim'] || '0';
-            const asbdId = response.headers['ig-set-asbd-id'] || '129477';
+            // Step 3: Extract dynamic headers (corrected header names)
+            const wwwClaim = response.headers['x-ig-set-www-claim'] || response.headers['ig-set-www-claim'] || '0';
+            const asbdId = response.headers['x-ig-set-asbd-id'] || response.headers['ig-set-asbd-id'] || '129477';
 
             // Step 4: Get LSD token from manifest
             let lsd = null;
@@ -224,7 +225,27 @@ export class CookieManager {
                     timeout: 5000
                 });
 
-                cookieSet.wwwClaim = headResponse.headers['ig-set-www-claim'] || cookieSet.wwwClaim || '0';
+                cookieSet.wwwClaim = headResponse.headers['x-ig-set-www-claim'] || headResponse.headers['ig-set-www-claim'] || cookieSet.wwwClaim || '0';
+                if (cookieSet.wwwClaim === '0') {
+                    try {
+                        const loginResp = await axios.get('https://www.instagram.com/api/v1/web/accounts/login/ajax/', {
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                'Accept': '*/*',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'X-IG-App-ID': '936619743392459',
+                                'Referer': 'https://www.instagram.com/accounts/login/',
+                                'Cookie': cookieString
+                            },
+                            timeout: 8000,
+                            validateStatus: () => true,
+                        });
+                        const claim2 = loginResp.headers['x-ig-set-www-claim'] || loginResp.headers['ig-set-www-claim'];
+                        if (claim2) cookieSet.wwwClaim = claim2;
+                    } catch (e) {
+                        // ignore, keep '0'
+                    }
+                }
                 console.log(`🔄 Refreshed WWW-Claim for ${cookieSet.id}: ${cookieSet.wwwClaim}`);
             } catch (error) {
                 console.log(`⚠️  Failed to refresh WWW-Claim for ${cookieSet.id}: ${error.message}`);
@@ -547,12 +568,28 @@ async function fetchUserPostsViaGraphQL(userId, after = null, first = 12, log, s
 // Extract single post via GraphQL API (matching production behavior)
 async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log, session, userData = {}) {
     const axios = (await import('axios')).default;
-    const maxRetries = 3;
+    const maxRetries = 5;
 
     const cookieSet = cookieManager.getCookiesForRequest();
     if (!cookieSet) {
         return { shortcode, error: 'No available cookies', data: null };
     }
+
+        // Local metrics for instrumentation per post
+        let unauthorizedCount = 0;
+        const variantStats = {
+            base: { attempts: 0, success: 0 },
+            no_lsd: { attempts: 0, success: 0 },
+            no_lsd_claim: { attempts: 0, success: 0 },
+            no_lsd_claim_csrf: { attempts: 0, success: 0 },
+            no_lsd_claim_csrf_client_hints: { attempts: 0, success: 0 },
+        };
+
+        const getCookieHeader = (cookiesObj = {}) => {
+            const keys = Object.keys(cookiesObj).sort();
+            return keys.map((k) => `${k}=${cookiesObj[k]}`).join('; ');
+        };
+
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -562,7 +599,7 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
 
             // 🎯 FIXED: Use correct shortcode media doc_id (confirmed 2025-07, same as Apify's actor)
             const params = new URLSearchParams({
-                doc_id: '10015901848480474', // Correct shortcode media doc_id
+                doc_id: INSTAGRAM_DOCUMENT_IDS.SHORTCODE_MEDIA,
                 variables: JSON.stringify(variables)
             });
 
@@ -579,42 +616,85 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
 
             log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'real' : 'fallback'}" (from profile discovery)`);
 
-            // 🎯 PRODUCTION HEADERS: Clean headers that work with IG's current requirements
-            const productionHeaders = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'X-IG-App-ID': '936619743392459', // Required anti-bot header
-                'X-FB-LSD': lsdToken, // 🎯 CRITICAL: Always send valid-length LSD token
-                'X-ASBD-ID': asbdId, // Dynamic per-session token
-                // 🎯 REMOVED: X-IG-WWW-Claim - better to omit than send "0"
-                'Cookie': Object.entries(cookieSet.cookies).map(([key, value]) => `${key}=${value}`).join('; '),
-                'Referer': `https://www.instagram.com/p/${shortcode}/`, // 🎯 CRITICAL: Post-specific referer
-                'Accept': '*/*',
-                'Sec-Fetch-Site': 'same-origin',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Dest': 'empty'
+            // 🎯 Build request headers per attempt (header variant fallback strategy)
+            const hasCsrf = !!cookieSet.cookies?.csrftoken;
+            const csrf = cookieSet.cookies?.csrftoken;
+
+            const buildHeaders = (variant) => {
+                const headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'X-IG-App-ID': '936619743392459',
+                    'X-ASBD-ID': asbdId,
+                    'Cookie': getCookieHeader(cookieSet.cookies),
+                    'Referer': `https://www.instagram.com/p/${shortcode}/`,
+                    'Sec-Fetch-Site': 'same-origin',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Dest': 'empty',
+                };
+                // If we have a non-zero claim, include it on all variants
+                if (wwwClaim && String(wwwClaim) !== '0') {
+                    headers['X-IG-WWW-Claim'] = String(wwwClaim);
+                }
+                if (variant === 'base') {
+                    headers['X-FB-LSD'] = lsdToken;
+                }
+                if (variant === 'no_lsd_claim' || variant === 'no_lsd_claim_csrf' || variant === 'no_lsd_claim_csrf_client_hints') {
+                    headers['X-IG-WWW-Claim'] = String(wwwClaim || '0');
+                }
+                if (variant === 'no_lsd_claim_csrf' || variant === 'no_lsd_claim_csrf_client_hints') {
+                    if (hasCsrf) headers['x-csrftoken'] = csrf;
+                }
+                if (variant === 'no_lsd_claim_csrf_client_hints') {
+                    headers['sec-ch-ua'] = '"Chromium";v="120", "Not=A?Brand";v="24", "Google Chrome";v="120"';
+                    headers['sec-ch-ua-platform'] = '"macOS"';
+                    headers['sec-ch-ua-mobile'] = '?0';
+                    headers['DNT'] = '1';
+                }
+                return headers;
             };
+
+            let variant;
+            if (attempt === 1) variant = 'base';
+            else if (attempt === 2) variant = 'no_lsd';
+            else if (attempt === 3) variant = 'no_lsd_claim';
+            else if (attempt === 4) variant = 'no_lsd_claim_csrf';
+            else variant = 'no_lsd_claim_csrf_client_hints';
+
+            if (variantStats[variant]) variantStats[variant].attempts++;
+
+            const requestHeaders = buildHeaders(variant);
+            log.debug(`Header variant for ${shortcode}: attempt ${attempt} variant=${variant} lsd=${requestHeaders['X-FB-LSD'] ? 'set' : 'omitted'} claim=${requestHeaders['X-IG-WWW-Claim'] ? 'set' : 'omitted'} csrf=${requestHeaders['x-csrftoken'] ? 'set' : 'omitted'}`);
 
             const timeout = 10000 + (attempt - 1) * 5000;
 
             const response = await axios.get(fullUrl, {
-                headers: productionHeaders,
+                headers: requestHeaders,
                 timeout,
                 validateStatus: () => true,
-                maxRedirects: 2
+                maxRedirects: 2,
             });
 
             // 🎯 ENHANCED 401 HANDLING: Better retry logic with session rotation
             if (response.status === 401) {
+                unauthorizedCount++;
                 if (attempt < maxRetries) {
                     log.warning(`Post ${shortcode} unauthorized (attempt ${attempt}) - rotating cookies and session`);
                     cookieManager.markAsBlocked(cookieSet.id);
+                    // Rotate session to force new IP / identity
+                    try { session.retire(); } catch (_) {}
 
-                    // Apply smart delay for 401 errors (3-5s back-off)
-                    const backoffDelay = 3000 + Math.random() * 2000; // 3-5 seconds
-                    await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                    // Apply specific backoff for 401 errors: 2s, 3s, 5s, 8s, 13s (+ jitter)
+                    const delays401 = [2000, 3000, 5000, 8000, 13000];
+                    const idx = Math.min(attempt - 1, delays401.length - 1);
+                    const jitter = Math.floor(Math.random() * 500);
+                    const backoffDelay = delays401[idx] + jitter;
+                    await new Promise((resolve) => setTimeout(resolve, backoffDelay));
 
                     throw new Error(`Unauthorized - retry needed`);
                 }
+                log.info(`Post ${shortcode} header variants summary: ${JSON.stringify(variantStats)} 401_count=${unauthorizedCount}`);
                 return { shortcode, error: `HTTP 401 after ${maxRetries} attempts`, data: null };
             }
 
@@ -672,12 +752,14 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             if (attempt > 1) {
                 log.info(`Post ${shortcode} succeeded on attempt ${attempt}`);
             }
+            if (variantStats[variant]) variantStats[variant].success++;
 
             return { shortcode, error: null, data: postData };
 
         } catch (error) {
             if (attempt === maxRetries) {
                 log.error(`Post ${shortcode} failed after ${maxRetries} attempts:`, error.message);
+                log.info(`Post ${shortcode} header variants summary: ${JSON.stringify(variantStats)} 401_count=${unauthorizedCount}`);
                 return { shortcode, error: error.message, data: null };
             }
 
