@@ -82,7 +82,7 @@ export class CookieManager {
         console.log(`🚀 Initializing guest cookie factory for public Instagram scraping`);
 
         // Create guest cookie jars for each proxy/session
-        const guestCookieCount = 10; // Increased to 10 guest jars for stricter cloud anti-bot
+        const guestCookieCount = 30; // Increased to 30 guest jars to reduce pool exhaustion under throttling
 
 
         for (let i = 1; i <= guestCookieCount; i++) {
@@ -111,6 +111,33 @@ export class CookieManager {
 
         if (this.cookiePools.size === 0) {
             throw new Error(`❌ CRITICAL: Failed to create any guest cookie jars. Check network connectivity.`);
+        }
+
+        // Optionally load authenticated session cookies (if provided via file or env)
+        try {
+            const realSets = await this.loadRealCookies();
+            if (Array.isArray(realSets) && realSets.length > 0) {
+                for (const rc of realSets) {
+                    // Merge into pool; prefer minimal usage so they get picked first
+                    this.cookiePools.set(rc.id, {
+                        id: rc.id,
+                        cookies: rc.cookies,
+                        wwwClaim: rc.wwwClaim || '0',
+                        asbdId: rc.asbdId || '129477',
+                        lsd: rc.lsd || null,
+                        lsdUntil: rc.lsdUntil || 0,
+                        callCount: 0,
+                        usage: rc.usage || 0,
+                        lastUsed: rc.lastUsed || 0,
+                        blocked: rc.blocked || false,
+                    });
+                }
+                console.log(`🔐 Loaded ${realSets.length} authenticated cookie set(s) into pool`);
+            } else {
+                console.log(`🔐 No authenticated cookie sets provided (optional)`);
+            }
+        } catch (e) {
+            console.log(`🔐 Skipped loading authenticated cookies: ${e.message}`);
         }
 
         console.log(`🎯 Guest cookie factory ready: ${this.cookiePools.size} jars created`);

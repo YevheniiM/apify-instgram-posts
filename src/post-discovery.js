@@ -441,7 +441,9 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 session.userData.lsd = await ensureLsdToken(session, log) || 'AVqbxe3J_YA';
             }
 
-            const batchResult = await retryManager.executeWithRetry(async (attempt) => {
+            let batchResult;
+                try {
+                    batchResult = await retryManager.executeWithRetry(async (attempt) => {
                 const batchSize = 50; // Increase batch size for better efficiency while staying under Instagram's limits
 
                 // Use GET endpoint to sidestep LSD requirement (as per your suggestion)
@@ -553,7 +555,9 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                         }
                     }
 
-                    throw new Error(`Request blocked, retrying with different session`);
+                    const err = new Error(`Request blocked (${response.status}), retry`);
+                    err.response = { status: response.status };
+                    throw err;
                 }
 
                 if (response.status === 429) {
@@ -622,6 +626,23 @@ export async function discoverPostsWithDirectAPI(username, maxPosts = 10000, log
                 };
 
             }, `Batch ${batchCount} for ${username}`);
+            } catch (error) {
+                log.warning(`Batch ${batchCount} for ${username} failed after retries: ${error.message}`);
+
+                // Retire current session and clear tokens so we can continue
+                if (session && typeof session.retire === 'function') {
+                    try { tokenRefresher.clearTokens(session.id); } catch (e) {}
+                    session.retire();
+                    session.userData = {};
+                    log.info(`🔄 Session retired post-batch failure, continuing with fresh session`);
+                }
+
+                // Force continuation with the same cursor using a fresh identity
+                hasNextPage = true;
+                log.info(`🔄 Forcing continuation with fresh session from cursor: ${endCursor || 'start'}`);
+                continue; // Continue the while(hasNextPage) loop
+            }
+
 
             // Process batch results
             shortcodes.push(...batchResult.shortcodes);
