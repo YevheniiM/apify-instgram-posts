@@ -1169,7 +1169,6 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null)
             let apiUrl = `https://i.instagram.com/api/v1/feed/user/${userId}/`;
             const params = new URLSearchParams({
                 count: Math.min(50, maxPosts - shortcodes.length),
-                rank_token: session.userData?.rankToken,
                 ...(maxId && { max_id: maxId })
             });
             apiUrl += `?${params}`;
@@ -1226,7 +1225,7 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null)
 
             // Add delay between requests
             if (hasNextPage && shortcodes.length < maxPosts) {
-                await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
+                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
             }
 
         } catch (error) {
