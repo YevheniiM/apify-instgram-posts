@@ -127,8 +127,8 @@ const profileCrawler = new CheerioCrawler({
     persistCookiesPerSession: true,
     sessionPoolOptions,
     // Enhanced production settings for residential proxies
-    requestHandlerTimeoutSecs: 120,
-    maxRequestRetries: 3,
+    requestHandlerTimeoutSecs: 300,
+    maxRequestRetries: 0,
     retryOnBlocked: true,
     requestHandler: profileRouter,
     // Enable production statistics logging
