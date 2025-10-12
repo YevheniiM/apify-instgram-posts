@@ -1173,7 +1173,15 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
             });
             apiUrl += `?${params}`;
 
-            const cs = cookieManager ? await cookieManager.getCookieSet(session) : null;
+            // Prefer authenticated cookie set for mobile API; fall back to a rotated set
+            let cs = null;
+            if (cookieManager?.getAuthenticatedCookieSet) {
+                cs = cookieManager.getAuthenticatedCookieSet() || null;
+            }
+            if (!cs && cookieManager?.getCookieSet) {
+                cs = await cookieManager.getCookieSet(session);
+            }
+
             const response = await axios.get(apiUrl, {
                 headers: {
                     'User-Agent': 'Instagram 300.0.0.0 iOS',
@@ -1181,11 +1189,20 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
                     'Accept': '*/*',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'X-Requested-With': 'XMLHttpRequest',
+                    ...(cs?.cookies?.csrftoken ? { 'X-CSRFToken': cs.cookies.csrftoken } : {}),
                     ...(cs?.cookies ? { 'Cookie': Object.entries(cs.cookies).map(([k,v])=>`${k}=${v}`).join('; ') } : {})
                 },
                 timeout: 8000,
                 validateStatus: (status) => status < 500
             });
+
+            // If unauthorized, retire cookie/session and retry next loop iteration
+            if (response.status === 401) {
+                log.debug(`Mobile API batch ${batchCount} unauthorized (401) using cookieSet=${cs?.id || 'none'}`);
+                try { if (cs?.id && cookieManager?.markAsBlocked) cookieManager.markAsBlocked(cs.id); } catch (_) {}
+                try { session?.retire?.(); } catch (_) {}
+                continue;
+            }
 
             if (response.status !== 200 || !response.data) {
                 log.debug(`Mobile API batch ${batchCount} failed with status ${response.status}`);
