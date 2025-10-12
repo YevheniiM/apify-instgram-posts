@@ -194,6 +194,58 @@ if (postUrls.length === 0) {
 log.info(`[Status message]: Starting posts scraper with ${postUrls.length} direct URL(s)`);
 log.info(`[Status message]: Starting the post scraper with ${postUrls.length} post URL(s)`);
 
+// NEW: Prefer direct batch extraction via GraphQL (with robust fallback) to reduce cost
+try {
+    const profileUrl = input.directUrls[0];
+    const usernameFromUrl = (profileUrl.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1];
+    const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
+    const discoveredShortcodes = postUrls
+        .map((u) => (u.match(SHORTCODE_RE) || [])[1])
+        .filter(Boolean);
+
+    if (usernameFromUrl && discoveredShortcodes.length > 0) {
+        log.info(`Using direct batch extraction for ${usernameFromUrl}: ${discoveredShortcodes.length} posts`);
+
+        const directBatchRequests = [{
+            url: 'https://www.instagram.com/',
+            userData: {
+                type: 'direct_posts',
+                username: usernameFromUrl,
+                maxPosts: input.maxPosts || null,
+                onlyPostsNewerThan: input.onlyPostsNewerThan || null,
+                discoveredShortcodes,
+            }
+        }];
+
+        const directPostCrawler = new CheerioCrawler({
+            proxyConfiguration,
+            maxConcurrency: 1, // single synthetic request
+            useSessionPool: true,
+            persistCookiesPerSession: true,
+            sessionPoolOptions,
+            requestHandlerTimeoutSecs: 120,
+            maxRequestRetries: 1,
+            retryOnBlocked: true,
+            requestHandler: postRouter,
+            statisticsOptions: {
+                logIntervalSecs: 60,
+                logMessage: 'CheerioCrawler request statistics'
+            }
+        });
+
+        await directPostCrawler.run(directBatchRequests);
+
+        // Skip URL-per-post crawling because direct batch already persisted posts
+        log.info('Direct batch extraction finished, skipping per-URL post crawler');
+
+        log.info('🎉 All done, shutting down');
+        await Actor.exit();
+    }
+} catch (e) {
+    log.warning(`Direct batch extraction path failed to initialize, falling back to per-URL crawling: ${e.message}`);
+}
+
+// Fallback: per-URL crawling (existing behavior)
 const postCrawler = new CheerioCrawler({
     proxyConfiguration,
     maxConcurrency, // Production max: 12

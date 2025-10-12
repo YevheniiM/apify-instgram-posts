@@ -916,7 +916,9 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                 onlyPostsNewerThan: onlyPostsNewerThan
             };
 
-            const discoveredShortcodes = await discoverPosts(username, discoveryOptions, log, session, cookieManager, throttling);
+            const discoveredShortcodes = (Array.isArray(request.userData?.discoveredShortcodes) && request.userData.discoveredShortcodes.length)
+                ? request.userData.discoveredShortcodes
+                : await discoverPosts(username, discoveryOptions, log, session, cookieManager, throttling);
 
             if (discoveredShortcodes.length > 0) {
                 log.info(`Discovered ${discoveredShortcodes.length} posts for ${username} using advanced discovery`);
