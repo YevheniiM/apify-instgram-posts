@@ -263,7 +263,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // 🎯 FIXED: Use our custom guest cookie manager instead of Crawlee's built-in one
         // Force mobile API discovery only to avoid GraphQL timeline HTML responses
-        const methods = ['mobileapi', 'directapi'];
+        const methods = ['mobileapi'];
         const shortcodes = await discoverPosts(username, {
             maxPosts: targetPostCount,
             methods,
