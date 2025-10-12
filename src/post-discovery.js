@@ -1168,10 +1168,11 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
 
     const axios = (await import('axios')).default;
 
-    const MAX_BATCHES = 200; // support very large profiles
+    const MAX_BATCHES = 200; // deprecated: do not artificially cap batches for large profiles
     const MAX_RETRIES_PER_CURSOR = 4;
 
-    while (hasNextPage && shortcodes.length < maxPosts && batchCount < MAX_BATCHES) {
+    // Remove artificial batch cap to support very large profiles (1K-70K+)
+    while (hasNextPage && shortcodes.length < maxPosts) {
         batchCount++;
         diag.batches = batchCount;
         diag.lastCursor = maxId || null;

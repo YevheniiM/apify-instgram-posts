@@ -1179,6 +1179,11 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 // Get fresh cookie set for retries if needed
                 const currentCookieSet = attempt === 1 ? cookieSet : cookieManager.getCookiesForRequest();
                 if (!currentCookieSet) {
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
                     throw new Error('No available cookies for retry');
                 }
 
@@ -1188,7 +1193,6 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Cookie': cookieManager.getCookieStringForDomain(currentCookieSet, 'www.instagram.com'),
                     'X-IG-App-ID': '936619743392459',
-                    'X-FB-LSD': 'AVqbxe3J_YA',
                     'X-ASBD-ID': '129477',
                     'X-CSRFToken': currentCookieSet.cookies.csrftoken || 'missing',
                     'Sec-Fetch-Site': 'same-origin',
@@ -1215,21 +1219,27 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
                 // Handle specific error cases that require retries
                 if (response.status === 401) {
-                    if (attempt < maxRetries) {
-                        log.warning(`Post ${shortcode} unauthorized (attempt ${attempt}) - retrying with new session`);
-                        // Mark current cookie as potentially blocked
-                        cookieManager.markAsBlocked(currentCookieSet.id);
-                        throw new Error(`Unauthorized - retry needed`);
-                    }
+                    log.warning(`Post ${shortcode} unauthorized (attempt ${attempt})`);
+                    cookieManager.markAsBlocked(currentCookieSet.id);
+                    // Try fallbacks immediately on auth errors
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
+                    if (attempt < maxRetries) throw new Error('Unauthorized - retry needed');
                     return { shortcode, error: `HTTP 401 after ${maxRetries} attempts`, data: null };
                 }
 
                 if (response.status === 403) {
-                    if (attempt < maxRetries) {
-                        log.warning(`Post ${shortcode} forbidden (attempt ${attempt}) - retrying with new session`);
-                        cookieManager.markAsBlocked(currentCookieSet.id);
-                        throw new Error(`Forbidden - retry needed`);
-                    }
+                    log.warning(`Post ${shortcode} forbidden (attempt ${attempt})`);
+                    cookieManager.markAsBlocked(currentCookieSet.id);
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
+                    if (attempt < maxRetries) throw new Error('Forbidden - retry needed');
                     return { shortcode, error: `HTTP 403 after ${maxRetries} attempts`, data: null };
                 }
 
@@ -1249,6 +1259,12 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                         log.warning(`Post ${shortcode} server error ${response.status} (attempt ${attempt}) - retrying`);
                         throw new Error(`Server error ${response.status} - retry needed`);
                     }
+                    // Non-200 unexpected – try fallbacks once
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
                     return { shortcode, error: `HTTP ${response.status}`, data: null };
                 }
 
@@ -1263,6 +1279,12 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
                 const post = jsonResponse?.data?.xdt_shortcode_media;
                 if (!post) {
+                    // Missing data – try fallbacks
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
                     if (attempt < maxRetries) {
                         log.warning(`Post ${shortcode} no data (attempt ${attempt}) - retrying`);
                         throw new Error(`No post data - retry needed`);
@@ -1291,6 +1313,12 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 lastError = error;
 
                 if (attempt === maxRetries) {
+                    // Final fallbacks before giving up
+                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
+                    if (mobile) return { shortcode, error: null, data: mobile };
+                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
+                    if (html) return { shortcode, error: null, data: html };
                     log.warning(`Post ${shortcode} failed after ${maxRetries} attempts: ${error.message}`);
                     break;
                 }

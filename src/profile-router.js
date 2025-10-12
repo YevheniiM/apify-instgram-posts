@@ -170,6 +170,8 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // Generate rank_token for mobile API pagination
         session.userData.rankToken = `${crypto.randomUUID()}_${userId}`;
+        // Persist userId on session so discovery can use Mobile API without re-fetching
+        session.userData.userId = userId;
 
         // Method 2: Extract actual post count from profile HTML
         let actualPostCount = null;
