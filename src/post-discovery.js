@@ -746,7 +746,7 @@ export async function discoverPostsViaThirdParty(username, _maxPosts = 12, log) 
 export async function discoverPosts(username, options = {}, log, session, cookieManager = null, throttling = null) {
     const {
         maxPosts = 10000,
-        methods = ['directapi', 'search', 'graph'], // Production methods: directapi, search, graph, thirdparty
+        methods = ['mobileapi'], // Force mobile API only to avoid GraphQL timeline blocks in 2025
         fallbackToKnown = true // Enable fallbacks by default for 100% success rate
     } = options;
 

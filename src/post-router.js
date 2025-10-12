@@ -911,7 +911,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
             // Use the production post discovery system (pure HTTP requests)
             const discoveryOptions = {
                 maxPosts: maxPosts || null, // Extract ALL posts if not specified
-                methods: ['directapi', 'search', 'graph'], // Production methods: direct API, search, GraphQL
+                methods: ['mobileapi'], // Force mobile API only to avoid GraphQL timeline blocks
                 fallbackToKnown: false,
                 onlyPostsNewerThan: onlyPostsNewerThan
             };
