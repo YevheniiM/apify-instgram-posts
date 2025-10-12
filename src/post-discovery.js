@@ -1039,16 +1039,9 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
 
         if (userId) {
             shortcodes = await tryMobileAPIWithPagination(userId, maxPosts, log, session, cookieManager);
-            if (shortcodes.length > 0) {
-                log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
-
-                // If we didn't get all posts, try to supplement with other endpoints
-                if (shortcodes.length < maxPosts) {
-                    log.info(`🔄 Mobile API got ${shortcodes.length}/${maxPosts} posts, trying additional endpoints for complete coverage`);
-                } else {
-                    return shortcodes; // We got all requested posts
-                }
-            }
+            log.info(`✅ Mobile API found ${shortcodes.length} posts for ${username}`);
+            // Production decision: return immediately to avoid long supplementary paths causing timeouts
+            return shortcodes;
         }
     } catch (error) {
         log.debug(`Mobile API failed: ${error.message}`);
