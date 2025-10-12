@@ -884,15 +884,29 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                 try {
                     log.info(`📦 Processing batch ${batchIndex + 1}/${totalBatches}: ${limitedBatch.length} posts`);
 
-                    // Try optimized GraphQL batch first; if not fully successful, fall back to individual fetches
+                    // Try optimized GraphQL batch first; if not fully successful, fall back only for missing shortcodes
                     let batchResults = await fetchPostsBatchGraphQL(limitedBatch, username, originalUrl, onlyPostsNewerThan, log);
-                    if (!Array.isArray(batchResults) || batchResults.length < limitedBatch.length) {
-                        const missingCount = Array.isArray(batchResults) ? (limitedBatch.length - batchResults.length) : limitedBatch.length;
-                        if (missingCount > 0) {
-                            log.debug(`Batch GraphQL returned ${batchResults ? batchResults.length : 0}/${limitedBatch.length}; falling back to per-shortcode for the rest`);
+
+                    // Determine which shortcodes are still missing
+                    let returnedShortcodes = new Set();
+                    if (Array.isArray(batchResults)) {
+                        for (const r of batchResults) {
+                            if (r && r.shortCode) returnedShortcodes.add(r.shortCode);
                         }
-                        const fallbackResults = await fetchPostsBatch(limitedBatch, username, originalUrl, onlyPostsNewerThan, log, sessionId);
-                        batchResults = fallbackResults;
+                    } else {
+                        batchResults = [];
+                    }
+                    const missingShortcodes = limitedBatch.filter(sc => !returnedShortcodes.has(sc));
+
+                    if (missingShortcodes.length > 0) {
+                        log.debug(`Batch GraphQL returned ${returnedShortcodes.size}/${limitedBatch.length}; fetching remaining ${missingShortcodes.length} via fallback`);
+                        // Fallback in chunks of 10 to respect internal per-call limits
+                        const chunkSize = 10;
+                        for (let i = 0; i < missingShortcodes.length; i += chunkSize) {
+                            const slice = missingShortcodes.slice(i, i + chunkSize);
+                            const fb = await fetchPostsBatch(slice, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                            if (Array.isArray(fb)) batchResults.push(...fb.filter(Boolean));
+                        }
                     }
 
                     // Save all successful results
