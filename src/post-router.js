@@ -862,6 +862,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
 
             // Process discovered shortcodes in batches for maximum speed
             let postsProcessed = 0;
+            const savedShortcodes = new Set();
             const batchSize = 25; // Process up to 25 posts per batch (GraphQL batch limit)
             const totalBatches = Math.ceil(discoveredShortcodes.length / batchSize);
 
@@ -914,6 +915,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                         if (postData) {
                             await Dataset.pushData(postData);
                             postsProcessed++;
+                            if (postData.shortCode) savedShortcodes.add(postData.shortCode);
                             log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
                         }
                     }
@@ -935,6 +937,38 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                 } catch (error) {
                     log.error(`Error processing batch ${batchIndex + 1}:`, error.message);
                     // Continue with next batch
+                }
+            }
+
+            // Final recovery pass: attempt remaining shortcodes with cooldown and strict fallback
+            const remainingShortcodes = discoveredShortcodes.filter(sc => !savedShortcodes.has(sc));
+            if (remainingShortcodes.length > 0) {
+                log.info(`Recovery pass: ${remainingShortcodes.length} posts missing, retrying with cooldown and fresh sessions`);
+                // Small cool-off to avoid immediate re-blocks
+                await new Promise(r => setTimeout(r, 1500 + Math.random()*1000));
+                // Try GraphQL batch first in chunks of 25
+                const chunk25 = 25;
+                for (let i = 0; i < remainingShortcodes.length; i += chunk25) {
+                    const slice = remainingShortcodes.slice(i, i + chunk25);
+                    let recovResults = await fetchPostsBatchGraphQL(slice, username, originalUrl, onlyPostsNewerThan, log) || [];
+                    const recovSet = new Set(recovResults.filter(Boolean).map(r => r.shortCode));
+                    const stillMissing = slice.filter(sc => !recovSet.has(sc));
+                    // Fallback per 10
+                    const chunk10 = 10;
+                    for (let j = 0; j < stillMissing.length; j += chunk10) {
+                        const sub = stillMissing.slice(j, j + chunk10);
+                        const fb = await fetchPostsBatch(sub, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                        if (Array.isArray(fb)) recovResults.push(...fb.filter(Boolean));
+                    }
+                    for (const postData of recovResults) {
+                        if (postData && !savedShortcodes.has(postData.shortCode)) {
+                            await Dataset.pushData(postData);
+                            postsProcessed++;
+                            savedShortcodes.add(postData.shortCode);
+                        }
+                    }
+                    // jitter between recovery chunks
+                    await new Promise(r => setTimeout(r, 400 + Math.random()*400));
                 }
             }
 
