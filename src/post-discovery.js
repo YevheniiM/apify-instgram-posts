@@ -20,11 +20,11 @@ import { SHORTCODE_DOC_ID, TIMEOUTS } from './constants.js';
 import { refreshCsrfToken, ensureLsdToken, TokenRefresher } from './session-utils.js';
 
 // BEFORE – loose capture, grabs "rum-slate-t" etc.
-// AFTER – *exact* 11-char shortcode & validation helper
-const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{11})\//g;
+// AFTER – accept historical Instagram shortcodes (5–15 chars). We still validate strictly to avoid CSS class names.
+const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//g;
 
 export function isValidShortcode(code) {
-  return /^[A-Za-z0-9_-]{11}$/.test(code);
+  return /^[A-Za-z0-9_-]{5,15}$/.test(code);
 }
 
 // Enhanced retry configuration for maximum reliability
