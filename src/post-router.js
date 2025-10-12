@@ -643,16 +643,12 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
 
             const fullUrl = `${graphqlUrl}?${params}`;
 
-            // Get dynamic tokens from userData (passed from profile discovery)
+            // Get dynamic tokens (from profile discovery); avoid per-post LSD fetch unless needed
             const wwwClaim = userData?.wwwClaim || '0';
             const asbdId = userData?.asbdId || '129477';
-
-            // 🎯 CRITICAL: Ensure we have fresh LSD token for this request
-            log.info(`🔑 Ensuring LSD token for post ${shortcode}`);
-            const { ensureLsdToken } = await import('./session-utils.js');
-            const lsdToken = await ensureLsdToken(session, log);
-
-            log.info(`🔑 Post ${shortcode} using tokens: ASBD-ID="${asbdId}", LSD="${session.userData.lsd ? 'real' : 'fallback'}" (from profile discovery)`);
+            let lsdToken = session?.userData?.lsd || null; // Use cached if present
+            // LSD will be fetched lazily only for header variant 'base'
+            // Note: Single-post GraphQL usually succeeds without LSD on cloud IPs
 
             // 🎯 Build request headers per attempt (header variant fallback strategy)
             const hasCsrf = !!cookieSet.cookies?.csrftoken;
@@ -697,6 +693,12 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             if (variantStats[variant]) variantStats[variant].attempts++;
 
             const requestHeaders = buildHeaders(variant);
+            // Lazily ensure LSD only when needed (variant 'base')
+            if (variant === 'base' && !lsdToken) {
+                const { ensureLsdToken } = await import('./session-utils.js');
+                lsdToken = await ensureLsdToken(session, log);
+            }
+
             log.debug(`Header variant for ${shortcode}: attempt ${attempt} variant=${variant} lsd=${requestHeaders['X-FB-LSD'] ? 'set' : 'omitted'} claim=${requestHeaders['X-IG-WWW-Claim'] ? 'set' : 'omitted'} csrf=${requestHeaders['x-csrftoken'] ? 'set' : 'omitted'}`);
 
             const timeout = 10000 + (attempt - 1) * 5000;
@@ -884,8 +886,21 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     if (postResult && postResult.data) {
         await Dataset.pushData(postResult.data);
         log.info(`Successfully extracted post via GraphQL: ${shortcode}`);
+        return;
     } else {
         log.warning(`Failed to extract post: ${shortcode}`);
+        // Ensure 100% data persistence: record a structured error item on final failure
+        try {
+            await Dataset.pushData({
+                type: 'post_error',
+                shortcode,
+                username,
+                url: originalUrl,
+                error: 'Extraction failed after all fallbacks',
+                scrapedAt: new Date().toISOString()
+            });
+        } catch (_) {}
+        return;
     }
 
     try {
