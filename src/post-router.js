@@ -945,15 +945,23 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                     try {
                         log.info(`📦 Processing batch ${batchIndex + 1}/${totalBatches}: ${limitedBatch.length} posts`);
 
-                        // Use batch processing for maximum speed
-                        const batchResults = await fetchPostsBatch(limitedBatch, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                        // Try optimized GraphQL batch first; if not fully successful, fall back to individual fetches
+                        let batchResults = await fetchPostsBatchGraphQL(limitedBatch, username, originalUrl, onlyPostsNewerThan, log);
+                        if (!Array.isArray(batchResults) || batchResults.length < limitedBatch.length) {
+                            const missingCount = Array.isArray(batchResults) ? (limitedBatch.length - batchResults.length) : limitedBatch.length;
+                            if (missingCount > 0) {
+                                log.debug(`Batch GraphQL returned ${batchResults ? batchResults.length : 0}/${limitedBatch.length}; falling back to per-shortcode for the rest`);
+                            }
+                            const fallbackResults = await fetchPostsBatch(limitedBatch, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                            batchResults = fallbackResults;
+                        }
 
                         // Save all successful results
                         for (const postData of batchResults) {
                             if (postData) {
                                 await Dataset.pushData(postData);
                                 postsProcessed++;
-                                log.info(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
+                                log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
                             }
                         }
 
@@ -1002,6 +1010,92 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
         }
     }
 });
+
+
+// Optimized batch GraphQL fetcher (attempt up to 25 shortcodes per request), with robust fallback
+async function fetchPostsBatchGraphQL(shortcodes, username, originalUrl, onlyPostsNewerThan, log) {
+    try {
+        const axios = (await import('axios')).default;
+        const cookieSet = cookieManager.getCookiesForRequest();
+        if (!cookieSet) {
+            log.debug('No cookies for batch GraphQL; skipping');
+            return null;
+        }
+
+        const batchLimit = Math.min(shortcodes.length, 25);
+        const batchShortcodes = shortcodes.slice(0, batchLimit);
+        const graphqlUrl = 'https://www.instagram.com/graphql/query/';
+        const variables = { shortcodes: batchShortcodes };
+        const params = new URLSearchParams({
+            doc_id: INSTAGRAM_DOCUMENT_IDS.BATCH_SHORTCODE_MEDIA,
+            variables: JSON.stringify(variables)
+        });
+        const fullUrl = `${graphqlUrl}?${params}`;
+
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Cookie': cookieManager.getCookieStringForDomain(cookieSet, 'www.instagram.com'),
+            'X-IG-App-ID': '936619743392459',
+            'X-ASBD-ID': '129477',
+            'X-CSRFToken': cookieSet.cookies?.csrftoken || 'missing',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Referer': `https://www.instagram.com/${username}/`
+        };
+
+        const response = await axios.get(fullUrl, {
+            headers,
+            timeout: 15000,
+            validateStatus: () => true,
+            maxRedirects: 2
+        });
+
+        if (response.status !== 200 || !response.data || !response.data.data) {
+            log.debug(`Batch GraphQL unsupported or non-200: ${response.status}`);
+            return null;
+        }
+
+        const dataObj = response.data.data;
+        // Find array of media-like objects
+        let mediaArray = null;
+        for (const val of Object.values(dataObj)) {
+            if (Array.isArray(val) && val.length && (val[0]?.shortcode || val[0]?.code || val[0]?.node?.shortcode)) {
+                mediaArray = val;
+                break;
+            }
+            // Sometimes nested under "edges"
+            if (val?.edges && Array.isArray(val.edges) && val.edges.length && (val.edges[0]?.node?.shortcode)) {
+                mediaArray = val.edges.map(e => e.node);
+                break;
+            }
+        }
+        if (!mediaArray || !mediaArray.length) {
+            log.debug('Batch GraphQL returned no media array');
+            return null;
+        }
+
+        const mapped = [];
+        for (const media of mediaArray) {
+            const node = media?.node || media;
+            // Optional time-range filter
+            if (onlyPostsNewerThan && node?.taken_at_timestamp) {
+                const postTs = moment.unix(node.taken_at_timestamp);
+                if (postTs.isBefore(moment(onlyPostsNewerThan))) continue;
+            }
+            const m = await extractPostDataFromGraphQL(node, username, originalUrl, log);
+            if (m) mapped.push(m);
+        }
+
+        return mapped;
+    } catch (e) {
+        log.debug(`Batch GraphQL fetch failed: ${e.message}`);
+        return null;
+    }
+}
 
 // Enhanced batch post retrieval function with individual post retries
 async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewerThan, log, sessionId = null) {
@@ -1429,8 +1523,8 @@ async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
                 .map(edge => edge.node.user.username);
         }
 
-        // Log successful extraction
-        log.info(`Extracted post data for ${postData.shortCode}: ${postData.type}, ${postData.likesCount} likes`);
+        // Log successful extraction (reduced verbosity)
+        log.debug(`Extracted post data for ${postData.shortCode}: ${postData.type}, ${postData.likesCount} likes`);
         return postData;
 
     } catch (error) {
