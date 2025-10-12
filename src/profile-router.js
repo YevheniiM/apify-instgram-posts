@@ -175,25 +175,28 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // Method 2: Extract actual post count from profile HTML
         let actualPostCount = null;
-        const postCountPatterns = [
-            /"edge_owner_to_timeline_media":{"count":([0-9.,]+)/,
-            /"media_count":([0-9.,]+)/,
-            /"posts_count":([0-9.,]+)/,
-            /([0-9][0-9.,]*)\s*posts/i,
-            /"count":([0-9.,]+),"page_info"/
+        const postCountRegexes = [
+            /"edge_owner_to_timeline_media":{"count":([0-9.,]+)/g,
+            /"media_count":([0-9.,]+)/g,
+            /"posts_count":([0-9.,]+)/g,
+            /([0-9][0-9.,]*)\s*posts/ig,
+            /"count":([0-9.,]+),"page_info"/g,
         ];
 
-        for (const pattern of postCountPatterns) {
-            const match = htmlContent.match(pattern);
-            if (match) {
-                const raw = String(match[1]).replace(/[.,\s]/g, '');
-                const num = parseInt(raw, 10);
-                if (!Number.isNaN(num) && num > 0) {
-                    actualPostCount = num;
-                    log.info(`Found actual post count: ${actualPostCount} using pattern: ${pattern}`);
-                    break;
+        const candidates = [];
+        for (const rx of postCountRegexes) {
+            try {
+                for (const m of htmlContent.matchAll(rx)) {
+                    const raw = String(m[1]).replace(/[.,\s]/g, '');
+                    const num = parseInt(raw, 10);
+                    if (!Number.isNaN(num) && num > 0) candidates.push(num);
                 }
-            }
+            } catch {}
+        }
+        if (candidates.length) {
+            actualPostCount = Math.max(...candidates);
+            const preview = candidates.slice(0, 5).join(', ');
+            log.info(`Found post count candidates [${preview}${candidates.length>5?'...':''}] → using: ${actualPostCount}`);
         }
 
         // Determine target post count: use maxPosts if specified, otherwise use actual count, fallback to unlimited
