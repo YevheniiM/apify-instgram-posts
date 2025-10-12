@@ -118,6 +118,37 @@ if (profileUrls.length === 0) {
 
 // PHASE 1: Direct URL scraper (Profile Discovery)
 log.info(`[Status message]: Starting the direct URL scraper with ${profileUrls.length} direct URL(s)`);
+// Compute dynamic request handler timeout for Phase 1 (profile discovery)
+// - Estimate based on maxPosts (12 posts per Mobile API page, ~2.5s per page)
+// - Clamp to 5 hours maximum
+// - Respect Actor remaining time if available (leave buffer)
+const MAX_HANDLER_TIMEOUT_SECS = 5 * 60 * 60; // 5 hours
+const POSTS_PER_BATCH = 12;
+const SECS_PER_BATCH = 2.5; // conservative average including network and parsing
+const BASE_OVERHEAD_SECS = 120; // setup + wrap-up buffer
+
+const requestedMaxPosts = Number(input?.maxPosts) || 10000; // default goal for large profiles
+const estimatedBatches = Math.max(1, Math.ceil(requestedMaxPosts / POSTS_PER_BATCH));
+const estimatedTimeoutSecs = Math.ceil((estimatedBatches * SECS_PER_BATCH) + BASE_OVERHEAD_SECS);
+
+// Clamp between 10 minutes and 5 hours
+let profileRequestTimeoutSecs = Math.min(Math.max(estimatedTimeoutSecs, 600), MAX_HANDLER_TIMEOUT_SECS);
+
+// Respect Actor remaining time if available
+try {
+    const env = Actor.getEnv();
+    if (env?.timeoutSecs && env?.startedAt) {
+        const startedAtMs = new Date(env.startedAt).getTime();
+        const elapsedSecs = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+        const remainingSecs = Math.max(0, env.timeoutSecs - elapsedSecs);
+        const SAFETY_BUFFER_SECS = 120; // leave time for shutdown and Phase 2 handoff
+        const allowedSecs = Math.max(60, remainingSecs - SAFETY_BUFFER_SECS);
+        profileRequestTimeoutSecs = Math.min(profileRequestTimeoutSecs, allowedSecs);
+    }
+} catch {}
+
+log.info(`Profile discovery timeout configured: ${profileRequestTimeoutSecs}s (requested maxPosts=${requestedMaxPosts})`);
+
 
 const profileCrawler = new CheerioCrawler({
     proxyConfiguration,
@@ -127,8 +158,8 @@ const profileCrawler = new CheerioCrawler({
     persistCookiesPerSession: true,
     sessionPoolOptions,
     // Enhanced production settings for residential proxies
-    // Increased to support very large profiles (e.g., 8k–70k posts) without premature timeout
-    requestHandlerTimeoutSecs: 7200,
+    // Dynamic timeout based on maxPosts, clamped to Actor remaining time and 5h max
+    requestHandlerTimeoutSecs: profileRequestTimeoutSecs,
     maxRequestRetries: 0,
     retryOnBlocked: true,
     requestHandler: profileRouter,
