@@ -862,7 +862,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
 
             // Process discovered shortcodes in batches for maximum speed
             let postsProcessed = 0;
-            const batchSize = 10; // Process 10 posts per batch
+            const batchSize = 25; // Process up to 25 posts per batch (GraphQL batch limit)
             const totalBatches = Math.ceil(discoveredShortcodes.length / batchSize);
 
             log.info(`Processing ${discoveredShortcodes.length} posts in ${totalBatches} batches of ${batchSize}`);

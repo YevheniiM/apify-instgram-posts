@@ -230,8 +230,9 @@ try {
             useSessionPool: true,
             persistCookiesPerSession: true,
             sessionPoolOptions,
-            requestHandlerTimeoutSecs: 120,
-            maxRequestRetries: 1,
+            // Prevent duplicate synthetic runs by allowing enough time to finish and disabling retries
+            requestHandlerTimeoutSecs: 900, // 15 minutes to cover all batches comfortably
+            maxRequestRetries: 0, // if it times out, do not rerun the synthetic request
             retryOnBlocked: true,
             requestHandler: postRouter,
             statisticsOptions: {
