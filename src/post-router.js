@@ -839,6 +839,101 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
         throw new Error(`Request blocked (${response.statusCode}), session retired.`);
     }
 
+    // Synthetic batch request path (triggered from main.js)
+    if (type === 'direct_posts') {
+        try {
+            log.info(`Starting advanced post extraction for ${username} using provided shortcodes...`);
+
+            const discoveryOptions = {
+                maxPosts: maxPosts || null,
+                methods: ['mobileapi'],
+                fallbackToKnown: false,
+                onlyPostsNewerThan: onlyPostsNewerThan
+            };
+
+            const discoveredShortcodes = (Array.isArray(request.userData?.discoveredShortcodes) && request.userData.discoveredShortcodes.length)
+                ? request.userData.discoveredShortcodes
+                : await discoverPosts(username, discoveryOptions, log, session, cookieManager, throttling);
+
+            if (discoveredShortcodes.length === 0) {
+                log.warning(`No shortcodes available for ${username} in direct batch path`);
+                return;
+            }
+
+            // Process discovered shortcodes in batches for maximum speed
+            let postsProcessed = 0;
+            const batchSize = 10; // Process 10 posts per batch
+            const totalBatches = Math.ceil(discoveredShortcodes.length / batchSize);
+
+            log.info(`Processing ${discoveredShortcodes.length} posts in ${totalBatches} batches of ${batchSize}`);
+
+            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+                if (maxPosts && postsProcessed >= maxPosts) {
+                    log.info(`Reached maxPosts limit (${maxPosts}), stopping`);
+                    break;
+                }
+
+                const startIndex = batchIndex * batchSize;
+                const endIndex = Math.min(startIndex + batchSize, discoveredShortcodes.length);
+                const batchShortcodes = discoveredShortcodes.slice(startIndex, endIndex);
+
+                // Limit batch to remaining posts needed
+                const remainingPosts = maxPosts ? Math.min(maxPosts - postsProcessed, batchShortcodes.length) : batchShortcodes.length;
+                const limitedBatch = batchShortcodes.slice(0, remainingPosts);
+
+                try {
+                    log.info(`📦 Processing batch ${batchIndex + 1}/${totalBatches}: ${limitedBatch.length} posts`);
+
+                    // Try optimized GraphQL batch first; if not fully successful, fall back to individual fetches
+                    let batchResults = await fetchPostsBatchGraphQL(limitedBatch, username, originalUrl, onlyPostsNewerThan, log);
+                    if (!Array.isArray(batchResults) || batchResults.length < limitedBatch.length) {
+                        const missingCount = Array.isArray(batchResults) ? (limitedBatch.length - batchResults.length) : limitedBatch.length;
+                        if (missingCount > 0) {
+                            log.debug(`Batch GraphQL returned ${batchResults ? batchResults.length : 0}/${limitedBatch.length}; falling back to per-shortcode for the rest`);
+                        }
+                        const fallbackResults = await fetchPostsBatch(limitedBatch, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                        batchResults = fallbackResults;
+                    }
+
+                    // Save all successful results
+                    for (const postData of batchResults) {
+                        if (postData) {
+                            await Dataset.pushData(postData);
+                            postsProcessed++;
+                            log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
+                        }
+                    }
+
+                    log.info(`Batch ${batchIndex + 1} completed: ${batchResults.length}/${limitedBatch.length} posts saved (total: ${postsProcessed})`);
+
+                    // Time-range filtering: Stop if no more posts within the wanted time range
+                    if (onlyPostsNewerThan && batchResults.length === 0) {
+                        log.info(`No more posts within the wanted time range, finishing`);
+                        break;
+                    }
+
+                    // Smart delay between batches
+                    if (batchIndex < totalBatches - 1) {
+                        const batchDelay = 500 + Math.random() * 500; // 0.5-1 second between batches
+                        await new Promise(resolve => setTimeout(resolve, batchDelay));
+                    }
+
+                } catch (error) {
+                    log.error(`Error processing batch ${batchIndex + 1}:`, error.message);
+                    // Continue with next batch
+                }
+            }
+
+            log.info(`Successfully processed ${postsProcessed} posts for ${username} using direct extraction`);
+            const successRate = ((postsProcessed / discoveredShortcodes.length) * 100).toFixed(1);
+            log.info(`Success Rate: ${successRate}% (${postsProcessed}/${discoveredShortcodes.length} posts)`);
+            return;
+        } catch (error) {
+            log.error(`Error in direct post extraction for ${username}:`, error.message);
+            return;
+        }
+    }
+
     // Extract shortcode from post URL
     const shortcodeMatch = request.url.match(/\/p\/([^\/\?]+)/);
     if (!shortcodeMatch) {
@@ -903,114 +998,7 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
         return;
     }
 
-    try {
-        // Check if this is a direct_posts request (from main.js)
-        if (type === 'direct_posts') {
-            log.info(`Starting advanced post discovery for ${username}...`);
 
-            // Use the production post discovery system (pure HTTP requests)
-            const discoveryOptions = {
-                maxPosts: maxPosts || null, // Extract ALL posts if not specified
-                methods: ['mobileapi'], // Force mobile API only to avoid GraphQL timeline blocks
-                fallbackToKnown: false,
-                onlyPostsNewerThan: onlyPostsNewerThan
-            };
-
-            const discoveredShortcodes = (Array.isArray(request.userData?.discoveredShortcodes) && request.userData.discoveredShortcodes.length)
-                ? request.userData.discoveredShortcodes
-                : await discoverPosts(username, discoveryOptions, log, session, cookieManager, throttling);
-
-            if (discoveredShortcodes.length > 0) {
-                log.info(`Discovered ${discoveredShortcodes.length} posts for ${username} using advanced discovery`);
-
-                // Process discovered shortcodes in batches for maximum speed
-                let postsProcessed = 0;
-                const batchSize = 10; // Process 10 posts per batch
-                const totalBatches = Math.ceil(discoveredShortcodes.length / batchSize);
-
-                log.info(`Processing ${discoveredShortcodes.length} posts in ${totalBatches} batches of ${batchSize}`);
-
-                for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-                    if (maxPosts && postsProcessed >= maxPosts) {
-                        log.info(`Reached maxPosts limit (${maxPosts}), stopping`);
-                        break;
-                    }
-
-                    const startIndex = batchIndex * batchSize;
-                    const endIndex = Math.min(startIndex + batchSize, discoveredShortcodes.length);
-                    const batchShortcodes = discoveredShortcodes.slice(startIndex, endIndex);
-
-                    // Limit batch to remaining posts needed
-                    const remainingPosts = maxPosts ? Math.min(maxPosts - postsProcessed, batchShortcodes.length) : batchShortcodes.length;
-                    const limitedBatch = batchShortcodes.slice(0, remainingPosts);
-
-                    try {
-                        log.info(`📦 Processing batch ${batchIndex + 1}/${totalBatches}: ${limitedBatch.length} posts`);
-
-                        // Try optimized GraphQL batch first; if not fully successful, fall back to individual fetches
-                        let batchResults = await fetchPostsBatchGraphQL(limitedBatch, username, originalUrl, onlyPostsNewerThan, log);
-                        if (!Array.isArray(batchResults) || batchResults.length < limitedBatch.length) {
-                            const missingCount = Array.isArray(batchResults) ? (limitedBatch.length - batchResults.length) : limitedBatch.length;
-                            if (missingCount > 0) {
-                                log.debug(`Batch GraphQL returned ${batchResults ? batchResults.length : 0}/${limitedBatch.length}; falling back to per-shortcode for the rest`);
-                            }
-                            const fallbackResults = await fetchPostsBatch(limitedBatch, username, originalUrl, onlyPostsNewerThan, log, sessionId);
-                            batchResults = fallbackResults;
-                        }
-
-                        // Save all successful results
-                        for (const postData of batchResults) {
-                            if (postData) {
-                                await Dataset.pushData(postData);
-                                postsProcessed++;
-                                log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
-                            }
-                        }
-
-                        log.info(`Batch ${batchIndex + 1} completed: ${batchResults.length}/${limitedBatch.length} posts saved (total: ${postsProcessed})`);
-
-                        // Time-range filtering: Stop if no more posts within the wanted time range
-                        if (onlyPostsNewerThan && batchResults.length === 0) {
-                            log.info(`No more posts within the wanted time range, finishing`);
-                            break;
-                        }
-
-                        // Smart delay between batches
-                        if (batchIndex < totalBatches - 1) {
-                            const batchDelay = 500 + Math.random() * 500; // 0.5-1 second between batches
-                            await new Promise(resolve => setTimeout(resolve, batchDelay));
-                        }
-
-                    } catch (error) {
-                        log.error(`Error processing batch ${batchIndex + 1}:`, error.message);
-                        // Continue with next batch
-                    }
-                }
-
-                log.info(`Successfully processed ${postsProcessed} posts for ${username} using direct extraction`);
-
-                // Calculate success rate
-                const successRate = ((postsProcessed / discoveredShortcodes.length) * 100).toFixed(1);
-                log.info(`Success Rate: ${successRate}% (${postsProcessed}/${discoveredShortcodes.length} posts)`);
-
-                return; // Finished processing this profile
-            } else {
-                log.warning(`Advanced post discovery found no posts for ${username}`);
-            }
-        }
-
-        // Fallback: If we reach here, something went wrong with discovery
-        log.warning(`No posts discovered for ${username}, skipping`);
-
-    } catch (error) {
-        log.error(`Error in direct post extraction for ${username}:`, error.message);
-
-        // Apply block delay if needed
-        if (error.message.includes('blocked') || error.message.includes('403') || error.message.includes('429')) {
-            await throttling.applySmartDelay(sessionId, true);
-            session.retire();
-        }
-    }
 });
 
 
