@@ -1160,6 +1160,96 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
     const fetchSinglePostWithRetry = async (shortcode, maxRetries = 3) => {
         let lastError = null;
 
+        // Local fallbacks: Mobile API -> HTML
+        const tryFallbacksLocal = async () => {
+            try {
+                const axios = (await import('axios')).default;
+                // Build a minimal session-like object for cookie selection
+                const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
+                const cs = await cookieManager.getCookieSet(sess);
+                const cookieHeader = cs && cs.cookies ? Object.entries(cs.cookies).map(([k,v]) => `${k}=${v}`).join('; ') : '';
+
+                // 1) Mobile API by shortcode
+                try {
+                    const mobileUrl = `https://i.instagram.com/api/v1/media/shortcode/${shortcode}/`;
+                    const mobileHeaders = {
+                        'User-Agent': 'Instagram 300.0.0.0 iOS',
+                        'X-IG-App-ID': '936619743392459',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
+                    };
+                    const mResp = await axios.get(mobileUrl, { headers: mobileHeaders, timeout: 15000, validateStatus: s => s < 500 });
+                    if (mResp.status === 200 && mResp.data) {
+                        const d = mResp.data;
+                        const it = d.items?.[0] || d.item || d.media;
+                        if (it) {
+                            const takenAt = it.taken_at || it.taken_at_timestamp || it.caption?.created_at;
+                            const tsIso = takenAt ? new Date(takenAt * 1000).toISOString() : undefined;
+                            return {
+                                shortcode,
+                                error: null,
+                                data: {
+                                    id: it.id || it.pk,
+                                    type: it.media_type === 2 ? 'Video' : (it.carousel_media ? 'Sidecar' : 'Image'),
+                                    shortCode: shortcode,
+                                    url: `https://www.instagram.com/p/${shortcode}/`,
+                                    timestamp: tsIso,
+                                    caption: it.caption?.text || '',
+                                    likesCount: it.like_count ?? it.edge_liked_by?.count ?? null,
+                                    commentsCount: it.comment_count ?? it.edge_media_to_comment?.count ?? null,
+                                    ownerUsername: username,
+                                    isCommercialContent: !!it.is_paid_partnership,
+                                }
+                            };
+                        }
+                    }
+                } catch (_) { /* ignore and try HTML */ }
+
+                // 2) HTML page fallback (lightweight)
+                try {
+                    const cheerio = (await import('cheerio')).default;
+                    const htmlUrl = `https://www.instagram.com/p/${shortcode}/`;
+                    const htmlHeaders = {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        ...(cookieHeader ? { 'Cookie': cookieHeader } : {})
+                    };
+                    const hResp = await axios.get(htmlUrl, { headers: htmlHeaders, timeout: 15000, validateStatus: s => s < 500 });
+                    if (hResp.status === 200 && typeof hResp.data === 'string') {
+                        const $ = cheerio.load(hResp.data);
+                        // Best-effort extract: find any script tag containing "shortcode"
+                        let foundCaption = '';
+                        $('script').each((_, el) => {
+                            const t = $(el).text();
+                            if (t && t.includes(shortcode) && t.includes('caption') && !foundCaption) {
+                                foundCaption = '...';
+                            }
+                        });
+                        // Minimal payload if page accessible
+                        return {
+                            shortcode,
+                            error: null,
+                            data: {
+                                id: undefined,
+                                type: 'Unknown',
+                                shortCode: shortcode,
+                                url: `https://www.instagram.com/p/${shortcode}/`,
+                                timestamp: undefined,
+                                caption: foundCaption,
+                                likesCount: null,
+                                commentsCount: null,
+                                ownerUsername: username,
+                                isCommercialContent: null,
+                            }
+                        };
+                    }
+                } catch (_) { /* ignore */ }
+            } catch (_) { /* ignore */ }
+            return null;
+        };
+
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 // Fetching post ${shortcode} (attempt ${attempt}/${maxRetries})
@@ -1179,11 +1269,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 // Get fresh cookie set for retries if needed
                 const currentCookieSet = attempt === 1 ? cookieSet : cookieManager.getCookiesForRequest();
                 if (!currentCookieSet) {
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fb = await tryFallbacksLocal();
+                    if (fb) return fb;
                     throw new Error('No available cookies for retry');
                 }
 
@@ -1221,12 +1308,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 if (response.status === 401) {
                     log.warning(`Post ${shortcode} unauthorized (attempt ${attempt})`);
                     cookieManager.markAsBlocked(currentCookieSet.id);
-                    // Try fallbacks immediately on auth errors
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fb = await tryFallbacksLocal();
+                    if (fb) return fb;
                     if (attempt < maxRetries) throw new Error('Unauthorized - retry needed');
                     return { shortcode, error: `HTTP 401 after ${maxRetries} attempts`, data: null };
                 }
@@ -1234,11 +1317,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 if (response.status === 403) {
                     log.warning(`Post ${shortcode} forbidden (attempt ${attempt})`);
                     cookieManager.markAsBlocked(currentCookieSet.id);
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fb = await tryFallbacksLocal();
+                    if (fb) return fb;
                     if (attempt < maxRetries) throw new Error('Forbidden - retry needed');
                     return { shortcode, error: `HTTP 403 after ${maxRetries} attempts`, data: null };
                 }
@@ -1260,11 +1340,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                         throw new Error(`Server error ${response.status} - retry needed`);
                     }
                     // Non-200 unexpected – try fallbacks once
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fbNon200 = await tryFallbacksLocal();
+                    if (fbNon200) return fbNon200;
                     return { shortcode, error: `HTTP ${response.status}`, data: null };
                 }
 
@@ -1280,11 +1357,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                 const post = jsonResponse?.data?.xdt_shortcode_media;
                 if (!post) {
                     // Missing data – try fallbacks
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fbNoData = await tryFallbacksLocal();
+                    if (fbNoData) return fbNoData;
                     if (attempt < maxRetries) {
                         log.warning(`Post ${shortcode} no data (attempt ${attempt}) - retrying`);
                         throw new Error(`No post data - retry needed`);
@@ -1314,11 +1388,8 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
                 if (attempt === maxRetries) {
                     // Final fallbacks before giving up
-                    const sess = { id: sessionId || `sess_${Math.random().toString(36).slice(2)}`, retire: () => {} };
-                    const mobile = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, sess);
-                    if (mobile) return { shortcode, error: null, data: mobile };
-                    const html = await extractPostViaHTML(shortcode, username, originalUrl, log, sess);
-                    if (html) return { shortcode, error: null, data: html };
+                    const fbFinal = await tryFallbacksLocal();
+                    if (fbFinal) return fbFinal;
                     log.warning(`Post ${shortcode} failed after ${maxRetries} attempts: ${error.message}`);
                     break;
                 }
