@@ -200,7 +200,14 @@ try {
     const usernameFromUrl = (profileUrl.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1];
     const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
     const discoveredShortcodes = postUrls
-        .map((u) => (u.match(SHORTCODE_RE) || [])[1])
+        .map((item) => {
+            if (!item) return null;
+            if (typeof item === 'string') return (item.match(SHORTCODE_RE) || [])[1];
+            if (typeof item === 'object') {
+                return item.userData?.shortcode || (typeof item.url === 'string' ? (item.url.match(SHORTCODE_RE) || [])[1] : null);
+            }
+            return null;
+        })
         .filter(Boolean);
 
     if (usernameFromUrl && discoveredShortcodes.length > 0) {
