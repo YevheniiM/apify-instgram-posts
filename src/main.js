@@ -105,8 +105,8 @@ for (const url of input.directUrls) {
             onlyPostsNewerThan: input.onlyPostsNewerThan,
             maxPosts: input.maxPosts || null,
             includeStories: input.includeStories || false,
-            includeReels: input.includeReels || true,
-            includeIGTV: input.includeIGTV || true
+            includeReels: (input.includeReels ?? false),
+            includeIGTV: (input.includeIGTV ?? false)
         }
     });
 }
@@ -199,7 +199,7 @@ try {
     const profileUrl = input.directUrls[0];
     const usernameFromUrl = (profileUrl.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1];
     const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
-    const discoveredShortcodes = postUrls
+    let discoveredShortcodes = postUrls
         .map((item) => {
             if (!item) return null;
             if (typeof item === 'string') return (item.match(SHORTCODE_RE) || [])[1];
@@ -209,6 +209,8 @@ try {
             return null;
         })
         .filter(Boolean);
+    // Deduplicate to avoid double-processing when Phase 1 re-runs or appends
+    discoveredShortcodes = Array.from(new Set(discoveredShortcodes));
 
     if (usernameFromUrl && discoveredShortcodes.length > 0) {
         log.info(`Using direct batch extraction for ${usernameFromUrl}: ${discoveredShortcodes.length} posts`);

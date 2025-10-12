@@ -130,6 +130,7 @@ export class CookieManager {
                         usage: rc.usage || 0,
                         lastUsed: rc.lastUsed || 0,
                         blocked: rc.blocked || false,
+                        isAuthenticated: true,
                     });
                 }
                 console.log(`🔐 Loaded ${realSets.length} authenticated cookie set(s) into pool`);

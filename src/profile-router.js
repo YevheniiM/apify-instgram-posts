@@ -263,7 +263,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // 🎯 FIXED: Use our custom guest cookie manager instead of Crawlee's built-in one
         // Force mobile API discovery only to avoid GraphQL timeline HTML responses
-        const methods = ['mobileapi'];
+        const methods = ['mobileapi', 'directapi'];
         const shortcodes = await discoverPosts(username, {
             maxPosts: targetPostCount,
             methods,
@@ -299,8 +299,16 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // Store discovered post URLs for Phase 2
         const existingPostUrls = await Actor.getValue('POST_URLS') || [];
-        const allPostUrls = [...existingPostUrls, ...postUrls];
-        await Actor.setValue('POST_URLS', allPostUrls);
+        const mergedPostUrls = [...existingPostUrls, ...postUrls];
+        const byShortcode = new Map();
+        const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
+        for (const item of mergedPostUrls) {
+            if (!item) continue;
+            const sc = item?.userData?.shortcode || (typeof item?.url === 'string' ? ((item.url.match(SHORTCODE_RE) || [])[1]) : null);
+            if (sc && !byShortcode.has(sc)) byShortcode.set(sc, item);
+        }
+        const uniquePostUrls = Array.from(byShortcode.values());
+        await Actor.setValue('POST_URLS', uniquePostUrls);
 
         log.info(`Phase 1: Discovered ${postUrls.length} post URLs for ${username}`);
 
