@@ -306,6 +306,7 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
         // Extract profile information from discovered data
         if (shortcodes.length > 0) {
+            const diag = (session && session.userData && session.userData.discoveryDiag) ? session.userData.discoveryDiag : {};
             const profileInfo = {
                 username,
                 userId: userId,
@@ -317,7 +318,14 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
                 onlyPostsNewerThan,
                 maxPosts,
                 includeReels,
-                includeIGTV
+                includeIGTV,
+                // Discovery diagnostics to aid investigations
+                discoveryLastCursor: diag.lastCursor ?? null,
+                discoveryBatches: diag.batches ?? null,
+                discoveryTotalRetries: diag.totalRetries ?? 0,
+                discoveryLastStatus: diag.lastStatus ?? null,
+                discoveryLastError: diag.lastError ?? null,
+                discoveryUsedAuthCookie: !!diag.usedAuthCookie
             };
 
             await Dataset.pushData({

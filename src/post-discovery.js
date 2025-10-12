@@ -1152,35 +1152,57 @@ export async function discoverPostsViaAlternativeAPI(username, maxPosts = 10000,
     return combinedShortcodes.slice(0, maxPosts);
 }
 
-// Mobile API with pagination support
+// Mobile API with pagination support (hardened: cursor continuity, resume-on-block, diagnostics)
 async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null, cookieManager = null) {
     const shortcodes = [];
     let hasNextPage = true;
     let maxId = null;
     let batchCount = 0;
 
+    // Diagnostics attached to session for profile_info enrichment
+    const diag = {
+        batches: 0,
+        totalDiscovered: 0,
+        lastStatus: null,
+        lastError: null,
+        lastCursor: null,
+        retriesForCursor: 0,
+        totalRetries: 0,
+        consecutiveEmpty: 0,
+        usedAuthCookie: false,
+    };
+    try { if (session?.userData) session.userData.discoveryDiag = diag; } catch (_) {}
+
     const axios = (await import('axios')).default;
 
-    while (hasNextPage && shortcodes.length < maxPosts && batchCount < 50) { // Increased limit to support large profiles
+    const MAX_BATCHES = 200; // support very large profiles
+    const MAX_RETRIES_PER_CURSOR = 4;
+
+    while (hasNextPage && shortcodes.length < maxPosts && batchCount < MAX_BATCHES) {
         batchCount++;
+        diag.batches = batchCount;
+        diag.lastCursor = maxId || null;
+
+        let cs = null;
+        if (cookieManager?.getAuthenticatedCookieSet) {
+            cs = cookieManager.getAuthenticatedCookieSet() || null;
+        }
+        if (!cs && cookieManager?.getCookieSet) {
+            cs = await cookieManager.getCookieSet(session);
+        }
+        diag.usedAuthCookie = !!(cs && cs.isAuthenticated);
+        if (!diag.usedAuthCookie && batchCount === 1) {
+            log.warning('Mobile discovery is running without authenticated cookies; large profiles may block after ~24 posts.');
+        }
 
         try {
             // Build mobile API URL with pagination
             let apiUrl = `https://i.instagram.com/api/v1/feed/user/${userId}/`;
             const params = new URLSearchParams({
-                count: Math.min(50, maxPosts - shortcodes.length),
-                ...(maxId && { max_id: maxId })
+                count: Math.min(50, Math.max(1, maxPosts - shortcodes.length)),
+                ...(maxId ? { max_id: maxId } : {})
             });
             apiUrl += `?${params}`;
-
-            // Prefer authenticated cookie set for mobile API; fall back to a rotated set
-            let cs = null;
-            if (cookieManager?.getAuthenticatedCookieSet) {
-                cs = cookieManager.getAuthenticatedCookieSet() || null;
-            }
-            if (!cs && cookieManager?.getCookieSet) {
-                cs = await cookieManager.getCookieSet(session);
-            }
 
             const response = await axios.get(apiUrl, {
                 headers: {
@@ -1192,65 +1214,111 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
                     ...(cs?.cookies?.csrftoken ? { 'X-CSRFToken': cs.cookies.csrftoken } : {}),
                     ...(cs?.cookies ? { 'Cookie': Object.entries(cs.cookies).map(([k,v])=>`${k}=${v}`).join('; ') } : {})
                 },
-                timeout: 8000,
-                validateStatus: (status) => status < 500
+                timeout: 10000,
+                validateStatus: (status) => status < 600
             });
 
-            // If unauthorized, retire cookie/session and retry next loop iteration
-            if (response.status === 401) {
-                log.debug(`Mobile API batch ${batchCount} unauthorized (401) using cookieSet=${cs?.id || 'none'}`);
+            diag.lastStatus = response.status;
+
+            // Handle auth / rate limiting explicitly and RESUME SAME CURSOR
+            if (response.status === 401 || response.status === 403) {
+                log.info(`Mobile API batch ${batchCount} got ${response.status}; rotating session and retrying same cursor`);
                 try { if (cs?.id && cookieManager?.markAsBlocked) cookieManager.markAsBlocked(cs.id); } catch (_) {}
                 try { session?.retire?.(); } catch (_) {}
-                continue;
+                diag.retriesForCursor += 1;
+                diag.totalRetries += 1;
+                if (diag.retriesForCursor <= MAX_RETRIES_PER_CURSOR) {
+                    await new Promise(r => setTimeout(r, 800 + Math.random()*600));
+                    batchCount--; // do not count this as a consumed page
+                    continue; // retry with same maxId
+                }
+                log.warning(`Exceeded retries for cursor ${maxId || 'START'} after ${MAX_RETRIES_PER_CURSOR} attempts`);
+                break;
+            }
+
+            if (response.status === 429) {
+                log.info('Mobile API rate limited (429); backing off and retrying');
+                diag.retriesForCursor += 1;
+                diag.totalRetries += 1;
+                if (diag.retriesForCursor <= MAX_RETRIES_PER_CURSOR) {
+                    await new Promise(r => setTimeout(r, 1500 + Math.random()*1000));
+                    batchCount--; // do not advance
+                    continue;
+                }
+                log.warning(`Exceeded 429 retries for cursor ${maxId || 'START'}`);
+                break;
             }
 
             if (response.status !== 200 || !response.data) {
-                log.debug(`Mobile API batch ${batchCount} failed with status ${response.status}`);
+                log.debug(`Mobile API batch ${batchCount} non-200 ${response.status}; will rotate and retry same cursor`);
+                diag.retriesForCursor += 1;
+                diag.totalRetries += 1;
+                if (diag.retriesForCursor <= MAX_RETRIES_PER_CURSOR) {
+                    try { session?.retire?.(); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 700 + Math.random()*500));
+                    batchCount--;
+                    continue;
+                }
                 break;
             }
 
-            const data = response.data;
+            const data = response.data || {};
 
-            // Extract posts from mobile API response
-            if (data.items && Array.isArray(data.items)) {
-                for (const item of data.items) {
-                    const shortcode = item.code || item.shortcode;
-                    if (shortcode && !shortcodes.includes(shortcode)) {
-                        shortcodes.push(shortcode);
-                        if (shortcodes.length >= maxPosts) break;
-                    }
+            // Extract posts
+            const items = Array.isArray(data.items) ? data.items : [];
+            if (items.length === 0) {
+                diag.consecutiveEmpty += 1;
+                log.info(`Mobile API batch ${batchCount} returned no posts (empty=${diag.consecutiveEmpty}); will retry after rotation`);
+                if (diag.consecutiveEmpty <= 2) {
+                    // Rotate and retry same cursor a couple of times
+                    try { session?.retire?.(); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 600 + Math.random()*600));
+                    batchCount--;
+                    continue;
                 }
-
-                // Check for pagination
-                hasNextPage = data.more_available && data.next_max_id;
-                maxId = data.next_max_id;
-
-                log.info(`Mobile API batch ${batchCount}: found ${data.items.length} posts, total: ${shortcodes.length}/${maxPosts}, more_available: ${data.more_available}, has_next_id: ${!!data.next_max_id}`);
-
-                if (data.items.length === 0) {
-                    log.info(`Mobile API batch ${batchCount} returned no posts - stopping pagination`);
-                    break;
-                }
-
-                // If we're not getting more posts but haven't reached the target, log it
-                if (!hasNextPage && shortcodes.length < maxPosts) {
-                    log.info(`Mobile API reached end: ${shortcodes.length}/${maxPosts} posts (more_available: ${data.more_available})`);
-                }
-            } else {
-                log.debug(`Mobile API batch ${batchCount} returned unexpected structure`);
                 break;
             }
 
-            // Add delay between requests
+            for (const item of items) {
+                const shortcode = item.code || item.shortcode;
+                if (shortcode && !shortcodes.includes(shortcode)) {
+                    shortcodes.push(shortcode);
+                    if (shortcodes.length >= maxPosts) break;
+                }
+            }
+
+            // Reset retry counters on success
+            diag.retriesForCursor = 0;
+            diag.consecutiveEmpty = 0;
+
+            // Pagination cursors
+            hasNextPage = !!(data.more_available && (data.next_max_id || data.next_cursor));
+            maxId = data.next_max_id || data.next_cursor || null;
+            diag.lastCursor = maxId;
+            diag.totalDiscovered = shortcodes.length;
+
+            log.info(`Mobile API batch ${batchCount}: found ${items.length} posts, total: ${shortcodes.length}/${maxPosts}, more_available: ${!!data.more_available}, next_id: ${maxId ? 'yes' : 'no'}`);
+
+            // Small jitter to avoid soft limits
             if (hasNextPage && shortcodes.length < maxPosts) {
-                await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+                await new Promise(resolve => setTimeout(resolve, 350 + Math.random() * 450));
             }
 
         } catch (error) {
-            log.debug(`Mobile API batch ${batchCount} error: ${error.message}`);
+            diag.lastError = String(error?.message || error);
+            log.debug(`Mobile API batch ${batchCount} error: ${diag.lastError}; rotating and retrying`);
+            diag.retriesForCursor += 1;
+            diag.totalRetries += 1;
+            if (diag.retriesForCursor <= MAX_RETRIES_PER_CURSOR) {
+                try { session?.retire?.(); } catch (_) {}
+                await new Promise(r => setTimeout(r, 800 + Math.random()*600));
+                batchCount--;
+                continue;
+            }
             break;
         }
     }
 
+    try { if (session?.userData) session.userData.discoveryDiag = diag; } catch (_) {}
     return shortcodes;
 }
