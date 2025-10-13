@@ -116,6 +116,12 @@ if (profileUrls.length === 0) {
     await Actor.exit();
 }
 
+// Check if Phase 1 already completed in a previous run (migration resume)
+const existingPostUrlsKV = await Actor.getValue('POST_URLS') || [];
+const phase1AlreadyCompleted = Array.isArray(existingPostUrlsKV) && existingPostUrlsKV.length > 0;
+
+if (!phase1AlreadyCompleted) {
+
 // PHASE 1: Direct URL scraper (Profile Discovery)
 log.info(`[Status message]: Starting the direct URL scraper with ${profileUrls.length} direct URL(s)`);
 // Compute dynamic request handler timeout for Phase 1 (profile discovery)
@@ -208,6 +214,10 @@ const profileCrawler = new CheerioCrawler({
 
 // Run Phase 1: Profile Discovery
 await profileCrawler.run(profileUrls);
+} else {
+    log.info('Phase 1 already complete, skipping to Phase 2');
+}
+
 
 // The statistics are already logged automatically by CheerioCrawler
 // No need to manually log them again

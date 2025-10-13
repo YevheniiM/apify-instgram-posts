@@ -1,7 +1,50 @@
 import { createCheerioRouter, Dataset } from 'crawlee';
+import { Actor } from 'apify';
+
 import moment from 'moment';
 import { discoverPosts, isValidShortcode } from './post-discovery.js';
 import { SHORTCODE_DOC_ID } from './constants.js';
+
+// Migration-resilient direct batch extraction progress keys
+const DIRECT_PROGRESS_KEY = 'DIRECT_POSTS_PROGRESS';
+const DIRECT_PROCESSED_KEY = 'DIRECT_POSTS_PROCESSED';
+
+// In-memory state to flush on migration
+const directBatchState = {
+    active: false,
+    profileUsername: null,
+    currentBatchIndex: 0,
+    totalPostsSaved: 0,
+    totalPostsExpected: 0,
+    processedShortcodes: new Set(),
+};
+
+// Flush progress safely to KV
+async function saveDirectProgress() {
+    try {
+        const { profileUsername, currentBatchIndex, totalPostsSaved, totalPostsExpected, processedShortcodes } = directBatchState;
+        const cursor = {
+            profileUsername,
+            currentBatchIndex,
+            totalPostsSaved,
+            totalPostsExpected,
+            timestamp: new Date().toISOString(),
+        };
+        await Actor.setValue(DIRECT_PROGRESS_KEY, cursor);
+        // Store processed shortcodes as array (up to 10k OK)
+        await Actor.setValue(DIRECT_PROCESSED_KEY, Array.from(processedShortcodes));
+    } catch (e) {
+        // Avoid throwing in migration path
+        console.warn('Failed to save direct progress:', e?.message || e);
+    }
+}
+
+// Listen for Apify migration and flush any in-memory progress
+Actor.on('migrating', async () => {
+    if (directBatchState.active) {
+        await saveDirectProgress();
+    }
+});
 
 // Create router for direct post extraction (single-phase architecture)
 export const postRouter = createCheerioRouter();
@@ -861,15 +904,27 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                 return;
             }
 
-            // Process discovered shortcodes in batches for maximum speed
-            let postsProcessed = 0;
-            const savedShortcodes = new Set();
+            // Resume checkpoint if present
+            const progress = await Actor.getValue(DIRECT_PROGRESS_KEY) || null;
+            const processedArr = await Actor.getValue(DIRECT_PROCESSED_KEY) || [];
+
+            directBatchState.active = true;
+            directBatchState.profileUsername = username;
+            directBatchState.totalPostsExpected = discoveredShortcodes.length;
+
+
+            // Process discovered shortcodes in batches for maximum speed (with resume)
+            let postsProcessed = Array.isArray(processedArr) ? processedArr.length : 0;
+            const savedShortcodes = new Set(Array.isArray(processedArr) ? processedArr : []);
             const batchSize = 25; // Process up to 25 posts per batch (GraphQL batch limit)
             const totalBatches = Math.ceil(discoveredShortcodes.length / batchSize);
+            const startBatchIndex = (progress && progress.profileUsername === username && Number.isInteger(progress.currentBatchIndex))
+                ? Math.max(0, progress.currentBatchIndex)
+                : 0;
 
             log.info(`Processing ${discoveredShortcodes.length} posts in ${totalBatches} batches of ${batchSize}`);
 
-            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+            for (let batchIndex = startBatchIndex; batchIndex < totalBatches; batchIndex++) {
                 if (maxPosts && postsProcessed >= maxPosts) {
                     log.info(`Reached maxPosts limit (${maxPosts}), stopping`);
                     break;
@@ -877,7 +932,8 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
 
                 const startIndex = batchIndex * batchSize;
                 const endIndex = Math.min(startIndex + batchSize, discoveredShortcodes.length);
-                const batchShortcodes = discoveredShortcodes.slice(startIndex, endIndex);
+                const rawBatch = discoveredShortcodes.slice(startIndex, endIndex);
+                const batchShortcodes = rawBatch.filter(sc => !savedShortcodes.has(sc));
 
                 // Limit batch to remaining posts needed
                 const remainingPosts = maxPosts ? Math.min(maxPosts - postsProcessed, batchShortcodes.length) : batchShortcodes.length;
@@ -922,6 +978,14 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                     }
 
                     log.info(`Batch ${batchIndex + 1} completed: ${batchResults.length}/${limitedBatch.length} posts saved (total: ${postsProcessed})`);
+
+
+                    // Persist checkpoint after each batch for migration resume
+                    directBatchState.currentBatchIndex = batchIndex + 1;
+                    directBatchState.totalPostsSaved = postsProcessed;
+                    directBatchState.totalPostsExpected = discoveredShortcodes.length;
+                    directBatchState.processedShortcodes = savedShortcodes;
+                    await saveDirectProgress();
 
                     // Time-range filtering: Stop if no more posts within the wanted time range
                     if (onlyPostsNewerThan && batchResults.length === 0) {
@@ -968,6 +1032,11 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                             savedShortcodes.add(postData.shortCode);
                         }
                     }
+                    // Persist progress after recovery additions as well
+                    directBatchState.totalPostsSaved = postsProcessed;
+                    directBatchState.processedShortcodes = savedShortcodes;
+                    await saveDirectProgress();
+
                     // jitter between recovery chunks
                     await new Promise(r => setTimeout(r, 400 + Math.random()*400));
                 }
@@ -976,9 +1045,17 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
             log.info(`Successfully processed ${postsProcessed} posts for ${username} using direct extraction`);
             const successRate = ((postsProcessed / discoveredShortcodes.length) * 100).toFixed(1);
             log.info(`Success Rate: ${successRate}% (${postsProcessed}/${discoveredShortcodes.length} posts)`);
+            // Clear checkpoint on successful completion
+            await Actor.setValue(DIRECT_PROGRESS_KEY, null);
+            await Actor.setValue(DIRECT_PROCESSED_KEY, null);
+            directBatchState.active = false;
+
             return;
         } catch (error) {
             log.error(`Error in direct post extraction for ${username}:`, error.message);
+            // Ensure we persist the latest progress on error and mark inactive
+            try { await saveDirectProgress(); } catch {}
+            directBatchState.active = false;
             return;
         }
     }
