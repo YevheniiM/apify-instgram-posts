@@ -1,52 +1,9 @@
 import { createCheerioRouter, Dataset } from 'crawlee';
-import { Actor } from 'apify';
-
 import moment from 'moment';
 import { discoverPosts, isValidShortcode } from './post-discovery.js';
 import { SHORTCODE_DOC_ID } from './constants.js';
 
-// Migration-resilient direct batch extraction progress keys
-const DIRECT_PROGRESS_KEY = 'DIRECT_POSTS_PROGRESS';
-const DIRECT_PROCESSED_KEY = 'DIRECT_POSTS_PROCESSED';
-
-// In-memory state to flush on migration
-const directBatchState = {
-    active: false,
-    profileUsername: null,
-    currentBatchIndex: 0,
-    totalPostsSaved: 0,
-    totalPostsExpected: 0,
-    processedShortcodes: new Set(),
-};
-
-// Flush progress safely to KV
-async function saveDirectProgress() {
-    try {
-        const { profileUsername, currentBatchIndex, totalPostsSaved, totalPostsExpected, processedShortcodes } = directBatchState;
-        const cursor = {
-            profileUsername,
-            currentBatchIndex,
-            totalPostsSaved,
-            totalPostsExpected,
-            timestamp: new Date().toISOString(),
-        };
-        await Actor.setValue(DIRECT_PROGRESS_KEY, cursor);
-        // Store processed shortcodes as array (up to 10k OK)
-        await Actor.setValue(DIRECT_PROCESSED_KEY, Array.from(processedShortcodes));
-    } catch (e) {
-        // Avoid throwing in migration path
-        console.warn('Failed to save direct progress:', e?.message || e);
-    }
-}
-
-// Listen for Apify migration and flush any in-memory progress
-Actor.on('migrating', async () => {
-    if (directBatchState.active) {
-        await saveDirectProgress();
-    }
-});
-
-// Create router for direct post extraction (single-phase architecture)
+// Create router for post extraction
 export const postRouter = createCheerioRouter();
 
 // Production GraphQL document IDs (updated July 2025)
@@ -884,6 +841,58 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     }
 
     // Synthetic batch request path (triggered from main.js)
+    // New: batch request path using RequestQueue (one batch per request)
+    if (type === 'batch_posts') {
+        try {
+            const batchShortcodes = Array.isArray(request.userData?.shortcodes) ? request.userData.shortcodes : [];
+            if (batchShortcodes.length === 0) {
+                log.warning(`Batch had no shortcodes for ${username}`);
+                return;
+            }
+
+            log.info(`📦 Processing batch of ${batchShortcodes.length} posts for ${username}`);
+
+            // Try GraphQL batch first; if not fully successful, fallback only for missing shortcodes
+            let batchResults = await fetchPostsBatchGraphQL(batchShortcodes, username, originalUrl, onlyPostsNewerThan, log);
+
+            // Determine which shortcodes are still missing
+            const successful = new Set();
+            if (Array.isArray(batchResults)) {
+                for (const r of batchResults) {
+                    if (r && r.shortCode) successful.add(r.shortCode);
+                }
+            } else {
+                batchResults = [];
+            }
+            const missingShortcodes = batchShortcodes.filter(sc => !successful.has(sc));
+
+            if (missingShortcodes.length > 0) {
+                log.debug(`GraphQL returned ${successful.size}/${batchShortcodes.length}; fetching remaining ${missingShortcodes.length} via fallback`);
+                const chunkSize = 10;
+                for (let i = 0; i < missingShortcodes.length; i += chunkSize) {
+                    const slice = missingShortcodes.slice(i, i + chunkSize);
+                    const fb = await fetchPostsBatch(slice, username, originalUrl, onlyPostsNewerThan, log, sessionId);
+                    if (Array.isArray(fb)) batchResults.push(...fb.filter(Boolean));
+                }
+            }
+
+            // Save batch results
+            let saved = 0;
+            for (const postData of batchResults) {
+                if (postData) {
+                    await Dataset.pushData(postData);
+                    saved++;
+                }
+            }
+
+            log.info(`Batch completed: ${saved}/${batchShortcodes.length} posts saved for ${username}`);
+            return;
+        } catch (error) {
+            log.error(`Error in batch post extraction for ${username}:`, error.message);
+            return;
+        }
+    }
+
     if (type === 'direct_posts') {
         try {
             log.info(`Starting advanced post extraction for ${username} using provided shortcodes...`);

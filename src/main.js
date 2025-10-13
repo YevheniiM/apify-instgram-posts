@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { CheerioCrawler, log } from 'crawlee';
+import { CheerioCrawler, RequestQueue, log } from 'crawlee';
 
 // Two-phase architecture - exactly like production Apify scraper
 import { profileRouter } from './profile-router.js';
@@ -257,26 +257,32 @@ try {
     if (usernameFromUrl && discoveredShortcodes.length > 0) {
         log.info(`Using direct batch extraction for ${usernameFromUrl}: ${discoveredShortcodes.length} posts`);
 
-        const directBatchRequests = [{
-            url: 'https://www.instagram.com/',
-            userData: {
-                type: 'direct_posts',
-                username: usernameFromUrl,
-                maxPosts: input.maxPosts || null,
-                onlyPostsNewerThan: input.onlyPostsNewerThan || null,
-                discoveredShortcodes,
-            }
-        }];
+        // Create a RequestQueue and push one request per batch of 25 shortcodes
+        const requestQueue = await RequestQueue.open();
+        const batchSize = 25;
+        for (let i = 0; i < discoveredShortcodes.length; i += batchSize) {
+            const slice = discoveredShortcodes.slice(i, i + batchSize);
+            await requestQueue.addRequest({
+                url: 'https://www.instagram.com/',
+                userData: {
+                    type: 'batch_posts',
+                    username: usernameFromUrl,
+                    shortcodes: slice,
+                    maxPosts: input.maxPosts || null,
+                    onlyPostsNewerThan: input.onlyPostsNewerThan || null,
+                }
+            });
+        }
 
-        const directPostCrawler = new CheerioCrawler({
+        const postBatchCrawler = new CheerioCrawler({
             proxyConfiguration,
-            maxConcurrency: 1, // single synthetic request
+            maxConcurrency, // allow parallel batches
             useSessionPool: true,
             persistCookiesPerSession: true,
             sessionPoolOptions,
-            // Prevent duplicate synthetic runs by allowing enough time to finish and disabling retries
-            requestHandlerTimeoutSecs: 900, // 15 minutes to cover all batches comfortably
-            maxRequestRetries: 0, // if it times out, do not rerun the synthetic request
+            requestQueue,
+            requestHandlerTimeoutSecs: 180,
+            maxRequestRetries: 2,
             retryOnBlocked: true,
             requestHandler: postRouter,
             statisticsOptions: {
@@ -285,11 +291,9 @@ try {
             }
         });
 
-        await directPostCrawler.run(directBatchRequests);
+        await postBatchCrawler.run();
 
-        // Skip URL-per-post crawling because direct batch already persisted posts
-        log.info('Direct batch extraction finished, skipping per-URL post crawler');
-
+        log.info('Post batch extraction finished');
         log.info('🎉 All done, shutting down');
         await Actor.exit();
     }
