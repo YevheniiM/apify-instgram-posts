@@ -260,10 +260,13 @@ try {
         // Create a RequestQueue and push one request per batch of 25 shortcodes
         const requestQueue = await RequestQueue.open();
         const batchSize = 25;
+        let enqueued = 0;
         for (let i = 0; i < discoveredShortcodes.length; i += batchSize) {
             const slice = discoveredShortcodes.slice(i, i + batchSize);
-            await requestQueue.addRequest({
-                url: 'https://www.instagram.com/',
+            const batchIndex = Math.floor(i / batchSize);
+            const result = await requestQueue.addRequest({
+                url: `https://www.instagram.com/?batch=${batchIndex}`,
+                uniqueKey: `batch_posts:${usernameFromUrl}:${batchIndex}`,
                 userData: {
                     type: 'batch_posts',
                     username: usernameFromUrl,
@@ -272,7 +275,9 @@ try {
                     onlyPostsNewerThan: input.onlyPostsNewerThan || null,
                 }
             });
+            if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) enqueued++;
         }
+        log.info(`Phase 2 queueing: enqueued ${enqueued} batch requests of up to ${batchSize} posts each for ${usernameFromUrl} (total shortcodes: ${discoveredShortcodes.length}).`);
 
         const postBatchCrawler = new CheerioCrawler({
             proxyConfiguration,
