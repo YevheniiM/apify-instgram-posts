@@ -1,8 +1,7 @@
 {
-    "directUrls": [
-        "https://www.instagram.com/evgesh_m/"
-    ],
-    "includeReels": true,
-    "includeIGTV": true,
-    "includeStories": false
+  "directUrls": ["https://www.instagram.com/instagram/"],
+  "maxPosts": 10,
+  "includeReels": true,
+  "includeIGTV": false,
+  "includeStories": false
 }

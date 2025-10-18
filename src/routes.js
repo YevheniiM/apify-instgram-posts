@@ -715,109 +715,69 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
 
 // Function to extract post data from the new GraphQL response structure
+// MINIMAL output - only fields used by Python processor
 async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
     try {
-        // Extract basic post information
-        const postData = {
-            type: 'post',
-            postType: getPostType(post),
-            username: username,
-            shortcode: post.shortcode,
-            id: post.id,
-            url: `https://www.instagram.com/p/${post.shortcode}/`,
-
-            // Media content
-            displayUrl: post.display_url,
-            mediaUrls: [post.display_url],
-
-            // Content metadata
-            caption: post.edge_media_to_caption?.edges?.[0]?.node?.text || '',
-            hashtags: [],
-            mentions: [],
-            accessibilityCaption: post.accessibility_caption,
-
-            // Engagement metrics
-            likesCount: post.edge_media_preview_like?.count || 0,
-            commentsCount: post.edge_media_to_comment?.count || 0,
-            viewsCount: post.video_view_count || null,
-            playsCount: post.video_play_count || null,
-
-            // Temporal data
-            takenAt: moment.unix(post.taken_at_timestamp).toISOString(),
-            takenAtTimestamp: post.taken_at_timestamp,
-            scrapedAt: moment().toISOString(),
-
-            // Media properties
-            isVideo: post.is_video || false,
-            hasAudio: post.has_audio || false,
-            dimensions: post.dimensions,
-
-            // Location data
-            location: post.location,
-
-            // Tagged users
-            taggedUsers: [],
-
-            // Post settings
-            commentsDisabled: post.comments_disabled || false,
-            likingDisabled: false,
-            isSponsored: post.is_paid_partnership || false,
-
-            // Scraping metadata
-            profileUrl: originalUrl
-        };
-
-        // Handle video content
-        if (post.is_video && post.video_url) {
-            postData.videoUrl = post.video_url;
-            postData.videoDuration = post.video_duration;
-            postData.mediaUrls = [post.video_url];
-        }
-
-        // Handle carousel posts
+        // Build images array
+        const images = [];
         if (post.__typename === 'GraphSidecar' && post.edge_sidecar_to_children) {
-            postData.carouselItems = [];
-            postData.mediaUrls = [];
-
+            // Carousel: collect all image URLs
             for (const edge of post.edge_sidecar_to_children.edges) {
                 const item = edge.node;
-                const carouselItem = {
-                    id: item.id,
-                    shortcode: item.shortcode,
-                    displayUrl: item.display_url,
-                    isVideo: item.is_video || false,
-                    videoUrl: item.video_url || null,
-                    videoDuration: item.video_duration || null,
-                    dimensions: item.dimensions,
-                    accessibilityCaption: item.accessibility_caption
-                };
-
-                postData.carouselItems.push(carouselItem);
-                postData.mediaUrls.push(item.display_url);
-
-                if (item.is_video && item.video_url) {
-                    postData.mediaUrls.push(item.video_url);
+                if (!item.is_video && item.display_url) {
+                    images.push(item.display_url);
                 }
             }
+        } else if (!post.is_video && post.display_url) {
+            // Single image post
+            images.push(post.display_url);
         }
 
-        // Extract hashtags and mentions from caption
-        if (postData.caption) {
-            postData.hashtags = (postData.caption.match(/#[\w]+/g) || []).map(tag => tag.substring(1));
-            postData.mentions = (postData.caption.match(/@[\w.]+/g) || []).map(mention => mention.substring(1));
-        }
+        // Extract caption
+        const caption = post.edge_media_to_caption?.edges?.[0]?.node?.text || '';
 
-        // Extract tagged users if available
-        if (post.edge_media_to_tagged_user?.edges) {
-            postData.taggedUsers = post.edge_media_to_tagged_user.edges.map(edge => ({
-                username: edge.node.user.username,
-                fullName: edge.node.user.full_name,
-                isVerified: edge.node.user.is_verified,
-                position: edge.node.position || { x: 0, y: 0 }
-            }));
-        }
+        // Extract hashtags and mentions
+        const hashtags = caption ? (caption.match(/#[\w]+/g) || []).map(tag => tag.substring(1)) : [];
+        const mentions = caption ? (caption.match(/@[\w.]+/g) || []).map(mention => mention.substring(1)) : [];
 
-        log.debug(`Extracted post data for ${postData.shortcode}: ${postData.postType}, ${postData.likesCount} likes`);
+        // Build MINIMAL post data - only fields Python processor uses
+        const postData = {
+            id: post.id,
+            type: getPostType(post),
+            shortCode: post.shortcode,
+            url: `https://www.instagram.com/p/${post.shortcode}/`,
+
+            // Media
+            displayUrl: post.display_url,
+            images: images,
+            alt: post.accessibility_caption || null,
+            videoUrl: post.is_video && post.video_url ? post.video_url : '',
+            videoDuration: post.is_video ? (post.video_duration || null) : null,
+
+            // Content
+            caption: caption,
+            hashtags: hashtags,
+            mentions: mentions,
+            sponsors: [],
+
+            // Metrics
+            likesCount: post.edge_media_preview_like?.count || 0,
+            commentsCount: post.edge_media_to_comment?.count || 0,
+            videoViewCount: post.video_view_count || 0,
+
+            // Dimensions
+            dimensionsHeight: post.dimensions?.height || 0,
+            dimensionsWidth: post.dimensions?.width || 0,
+
+            // Temporal
+            timestamp: moment.unix(post.taken_at_timestamp).toISOString(),
+
+            // Sponsorship
+            paidPartnership: post.is_paid_partnership || false,
+            isSponsored: post.is_paid_partnership || false
+        };
+
+        log.debug(`Extracted post data for ${postData.shortCode}: ${postData.type}, ${postData.likesCount} likes`);
         return postData;
 
     } catch (error) {
@@ -872,51 +832,54 @@ async function extractPostData(post, username, originalUrl, log) {
     // Extract accessibility caption
     const accessibilityCaption = post.accessibility_caption || null;
 
-    // Build comprehensive post data object
+    // Build images array
+    const images = [];
+    if (mediaData.carouselItems) {
+        // Extract images from carousel
+        for (const item of mediaData.carouselItems) {
+            if (!item.isVideo && item.displayUrl) {
+                images.push(item.displayUrl);
+            }
+        }
+    } else if (!post.is_video && mediaData.displayUrl) {
+        images.push(mediaData.displayUrl);
+    }
+
+    // Build MINIMAL post data - only fields Python processor uses
     const postData = {
-        type: 'post',
-        postType,
-        username,
-        shortcode: post.shortcode,
         id: post.id,
+        type: postType,
+        shortCode: post.shortcode,
         url: `https://www.instagram.com/p/${post.shortcode}/`,
 
-        // Media data
-        ...mediaData,
+        // Media
+        displayUrl: mediaData.displayUrl,
+        images: images,
+        alt: accessibilityCaption,
+        videoUrl: mediaData.videoUrl || '',
+        videoDuration: mediaData.videoDuration || null,
 
-        // Content data
+        // Content
         caption,
         hashtags,
         mentions,
-        accessibilityCaption,
+        sponsors: [],
 
-        // Engagement data
-        ...engagement,
+        // Metrics
+        likesCount: engagement.likesCount,
+        commentsCount: engagement.commentsCount,
+        videoViewCount: engagement.viewsCount || 0,
 
-        // Metadata
-        takenAt: postTimestamp.toISOString(),
-        takenAtTimestamp: post.taken_at_timestamp,
-        isVideo: post.is_video || false,
-        hasAudio: post.has_audio || false,
+        // Dimensions
+        dimensionsHeight: post.dimensions?.height || 0,
+        dimensionsWidth: post.dimensions?.width || 0,
 
-        // Location and tagging
-        location,
-        taggedUsers,
+        // Temporal
+        timestamp: postTimestamp.toISOString(),
 
-        // Technical data
-        dimensions: post.dimensions ? {
-            height: post.dimensions.height,
-            width: post.dimensions.width
-        } : null,
-
-        // Additional metadata
-        commentsDisabled: post.comments_disabled || false,
-        likingDisabled: post.like_and_view_counts_disabled || false,
-        isSponsored: post.is_sponsored || false,
-
-        // Scraping metadata
-        scrapedAt: new Date().toISOString(),
-        profileUrl: originalUrl
+        // Sponsorship
+        paidPartnership: post.is_sponsored || false,
+        isSponsored: post.is_sponsored || false
     };
 
     return postData;
@@ -1131,13 +1094,17 @@ router.addDefaultHandler(async ({ request, response, session, log, crawler }) =>
 
     const userData = jsonResponse.data.user;
 
-    // Check if profile is private
+    // Check if profile is private (Python processor compatible format)
     if (userData.is_private) {
         log.warning(`Profile ${username} is private, cannot scrape posts`);
         await Dataset.pushData({
-            type: 'error',
+            id: userData.id || 'unknown',
+            type: 'post_error',
             username,
-            error: 'Profile is private',
+            url: `https://www.instagram.com/${username}/`,
+            shortCode: '',
+            error: 'Restricted profile',  // Python processor expects this exact text
+            isRestrictedProfile: true,    // Python processor checks this flag
             scrapedAt: new Date().toISOString()
         });
         return;

@@ -112,7 +112,7 @@ for (const url of input.directUrls) {
             onlyPostsNewerThan: input.onlyPostsNewerThan,
             maxPosts: input.maxPosts || null,
             includeStories: input.includeStories || false,
-            includeReels: (input.includeReels ?? false),
+            includeReels: (input.includeReels ?? true),
             includeIGTV: (input.includeIGTV ?? false)
         }
     });

@@ -137,6 +137,20 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
         try {
             const apiUser = await getProfileInfoViaAPI(username, session, log);
             if (apiUser && apiUser.is_private === true) {
+                // Python processor compatible error format for private profiles
+                const privateError = {
+                    id: apiUser.id || 'unknown',
+                    url: originalUrl,
+                    username: username,
+                    error: 'Restricted profile',  // Python processor expects this exact text
+                    isRestrictedProfile: true,    // Python processor checks this flag
+                    type: 'post_error',
+                    shortCode: '',
+                    scrapedAt: new Date().toISOString()
+                };
+                await Dataset.pushData(privateError);
+
+                // Also push profile info for backward compatibility
                 const privateInfo = {
                     username,
                     userId: apiUser.id || null,

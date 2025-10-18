@@ -1596,19 +1596,46 @@ async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, se
         images.push(primaryImage);
     }
 
+    // Extract caption and derived fields
+    const caption = item.caption?.text || '';
+    const hashtags = caption ? (caption.match(/#[\w]+/g) || []).map(tag => tag.substring(1)) : [];
+    const mentions = caption ? (caption.match(/@[\w.]+/g) || []).map(m => m.substring(1)) : [];
+
+    // Build MINIMAL post data - only fields Python processor uses
     return {
-        id: item.id || item.pk,
+        id: item.id || item.pk || `${item.media_id}`,
         type: item.media_type === 2 ? 'Video' : (item.carousel_media ? 'Sidecar' : 'Image'),
         shortCode: shortcode,
         url: `https://www.instagram.com/p/${shortcode}/`,
-        timestamp: tsIso,
-        caption: item.caption?.text || '',
+
+        // Media
+        displayUrl: images[0] || null,
+        images: images,
+        alt: item.accessibility_caption || null,
+        videoUrl: item.video_versions?.[0]?.url || '',
+        videoDuration: item.video_duration || null,
+
+        // Content
+        caption: caption,
+        hashtags: hashtags,
+        mentions: mentions,
+        sponsors: [],
+
+        // Metrics
         likesCount: getLikesCount(item),
         commentsCount: getCommentsCount(item),
-        ownerUsername: username,
-        isCommercialContent: !!item.is_paid_partnership,
-        displayUrl: images[0] || null,
-        images,
+        videoViewCount: item.view_count || item.play_count || 0,
+
+        // Dimensions
+        dimensionsHeight: item.original_height || 0,
+        dimensionsWidth: item.original_width || 0,
+
+        // Temporal
+        timestamp: tsIso,
+
+        // Sponsorship
+        paidPartnership: !!item.is_paid_partnership,
+        isSponsored: !!item.is_paid_partnership
     };
 }
 
