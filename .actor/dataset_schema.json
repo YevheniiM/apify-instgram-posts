@@ -1,0 +1,66 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "type": "object",
+    "properties": {
+      "id": { "type": ["string", "number"], "description": "Post ID" },
+      "type": { "type": "string", "description": "Post type: Image | Video | Sidecar" },
+      "shortCode": { "type": "string", "description": "Instagram shortcode" },
+      "url": { "type": "string", "description": "Post URL" },
+      "timestamp": { "type": "string", "format": "date-time", "description": "ISO timestamp" },
+      "caption": { "type": "string", "description": "Post caption" },
+      "hashtags": { "type": "array", "items": { "type": "string" } },
+      "mentions": { "type": "array", "items": { "type": "string" } },
+      "likesCount": { "type": ["integer", "number", "null"], "description": "Likes" },
+      "commentsCount": { "type": ["integer", "number", "null"], "description": "Comments" },
+      "videoViewCount": { "type": ["integer", "number", "null"] },
+      "displayUrl": { "type": ["string", "null"], "description": "Primary image URL" },
+      "images": { "type": "array", "items": { "type": "string" } },
+      "videoUrl": { "type": ["string", "null"] },
+      "videoDuration": { "type": ["integer", "number", "null"], "description": "ms" },
+      "dimensionsHeight": { "type": ["integer", "number", "null"] },
+      "dimensionsWidth": { "type": ["integer", "number", "null"] },
+      "paidPartnership": { "type": ["boolean", "null"] },
+      "isSponsored": { "type": ["boolean", "null"] },
+      "username": { "type": ["string", "null"] },
+      "inputUrl": { "type": ["string", "null"] }
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Posts",
+      "transformation": {
+        "fields": [
+          "username",
+          "shortCode",
+          "type",
+          "timestamp",
+          "caption",
+          "likesCount",
+          "commentsCount",
+          "displayUrl",
+          "images",
+          "videoUrl",
+          "url",
+          "id"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "displayUrl": { "label": "Image", "format": "image" },
+          "url": { "label": "Post", "format": "link" },
+          "timestamp": { "label": "Time", "format": "date" },
+          "likesCount": { "label": "Likes", "format": "number" },
+          "commentsCount": { "label": "Comments", "format": "number" },
+          "images": { "label": "Images", "format": "array" },
+          "videoUrl": { "label": "Video", "format": "link" },
+          "caption": { "label": "Caption", "format": "text" },
+          "shortCode": { "label": "Shortcode", "format": "text" },
+          "type": { "label": "Type", "format": "text" }
+        }
+      }
+    }
+  }
+}
+

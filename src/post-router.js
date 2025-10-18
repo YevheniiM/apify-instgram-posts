@@ -1282,10 +1282,27 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                                     url: `https://www.instagram.com/p/${shortcode}/`,
                                     timestamp: tsIso,
                                     caption: it.caption?.text || '',
-                                    likesCount: it.like_count ?? it.edge_liked_by?.count ?? null,
-                                    commentsCount: it.comment_count ?? it.edge_media_to_comment?.count ?? null,
+                                    likesCount: getLikesCount(it),
+                                    commentsCount: getCommentsCount(it),
                                     ownerUsername: username,
                                     isCommercialContent: !!it.is_paid_partnership,
+                                    // Media URLs
+                                    displayUrl: (Array.isArray(it?.carousel_media) && it.carousel_media.length)
+                                        ? (it.carousel_media[0]?.image_versions2?.candidates?.[0]?.url || null)
+                                        : (it?.image_versions2?.candidates?.[0]?.url || it?.thumbnail_url || it?.display_url || null),
+                                    images: (() => {
+                                        const arr = [];
+                                        if (Array.isArray(it?.carousel_media) && it.carousel_media.length) {
+                                            for (const cm of it.carousel_media) {
+                                                const u = cm?.image_versions2?.candidates?.[0]?.url || cm?.thumbnail_url || cm?.display_url || null;
+                                                if (u) arr.push(u);
+                                            }
+                                        } else {
+                                            const u = it?.image_versions2?.candidates?.[0]?.url || it?.thumbnail_url || it?.display_url || null;
+                                            if (u) arr.push(u);
+                                        }
+                                        return arr;
+                                    })(),
                                 }
                             };
                         }
@@ -1567,6 +1584,18 @@ async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, se
     const takenAt = item.taken_at || item.taken_at_timestamp || item.caption?.created_at;
     const tsIso = takenAt ? new Date(takenAt * 1000).toISOString() : undefined;
 
+    // Build media URLs (mobile API structure)
+    const primaryImage = item?.image_versions2?.candidates?.[0]?.url || item?.thumbnail_url || item?.display_url || null;
+    const images = [];
+    if (Array.isArray(item?.carousel_media) && item.carousel_media.length) {
+        for (const cm of item.carousel_media) {
+            const u = cm?.image_versions2?.candidates?.[0]?.url || cm?.thumbnail_url || cm?.display_url || null;
+            if (u) images.push(u);
+        }
+    } else if (primaryImage) {
+        images.push(primaryImage);
+    }
+
     return {
         id: item.id || item.pk,
         type: item.media_type === 2 ? 'Video' : (item.carousel_media ? 'Sidecar' : 'Image'),
@@ -1574,10 +1603,12 @@ async function extractPostViaMobileAPI(shortcode, username, originalUrl, log, se
         url: `https://www.instagram.com/p/${shortcode}/`,
         timestamp: tsIso,
         caption: item.caption?.text || '',
-        likesCount: item.like_count ?? item.edge_liked_by?.count ?? null,
-        commentsCount: item.comment_count ?? item.edge_media_to_comment?.count ?? null,
+        likesCount: getLikesCount(item),
+        commentsCount: getCommentsCount(item),
         ownerUsername: username,
         isCommercialContent: !!item.is_paid_partnership,
+        displayUrl: images[0] || null,
+        images,
     };
 }
 
@@ -1629,6 +1660,17 @@ async function extractPostViaHTML(shortcode, username, originalUrl, log, session
     const ts = media.taken_at_timestamp || media.taken_at || media.takenAt;
     const tsIso = ts ? new Date(ts * 1000).toISOString() : undefined;
 
+    // Build images for HTML fallback
+    const htmlImages = [];
+    if (media.edge_sidecar_to_children?.edges?.length) {
+        for (const edge of media.edge_sidecar_to_children.edges) {
+            const node = edge.node;
+            if (node?.display_url) htmlImages.push(node.display_url);
+        }
+    } else if (media.display_url) {
+        htmlImages.push(media.display_url);
+    }
+
     return {
         id: media.id,
         type: media.__typename === 'XDTGraphVideo' ? 'Video' : (media.edge_sidecar_to_children ? 'Sidecar' : 'Image'),
@@ -1636,10 +1678,12 @@ async function extractPostViaHTML(shortcode, username, originalUrl, log, session
         url: `https://www.instagram.com/p/${shortcode}/`,
         timestamp: tsIso,
         caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || media.caption?.text || '',
-        likesCount: media.edge_media_preview_like?.count ?? media.like_count ?? null,
-        commentsCount: media.edge_media_to_comment?.count ?? media.comment_count ?? null,
+        likesCount: getLikesCount(media),
+        commentsCount: getCommentsCount(media),
         ownerUsername: username,
         isCommercialContent: !!media.is_paid_partnership,
+        displayUrl: htmlImages[0] || null,
+        images: htmlImages,
     };
 }
 
@@ -1691,9 +1735,9 @@ async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
             sponsors: [], // Will be populated below
 
             // Engagement Metrics
-            likesCount: post.edge_media_preview_like?.count || 0,
-            commentsCount: post.edge_media_to_comment?.count || 0,
-            videoViewCount: post.video_view_count || 0,
+            likesCount: getLikesCount(post),
+            commentsCount: getCommentsCount(post),
+            videoViewCount: post.video_view_count || post.view_count || 0,
 
             // Media Content
             displayUrl: post.display_url,
@@ -1713,23 +1757,49 @@ async function extractPostDataFromGraphQL(post, username, originalUrl, log) {
         };
 
         // Handle carousel posts (Sidecar) - extract all images
-        if (post.__typename === 'GraphSidecar' && post.edge_sidecar_to_children) {
+        const isSidecar = (post.__typename === 'GraphSidecar' || post.__typename === 'XDTGraphSidecar' || (post.edge_sidecar_to_children?.edges?.length > 0));
+        if (isSidecar && post.edge_sidecar_to_children?.edges?.length) {
             const allImages = [];
-
             for (const edge of post.edge_sidecar_to_children.edges) {
                 const item = edge.node;
-                allImages.push(item.display_url);
-
-                // For video items in carousel, also add video URL
-                if (item.is_video && item.video_url) {
-                    postData.videoUrl = item.video_url; // Use first video found
-                    postData.videoDuration = item.video_duration ? item.video_duration * 1000 : null;
-                    postData.videoViewCount = item.video_view_count || 0;
+                if (item?.display_url) allImages.push(item.display_url);
+                if (item?.is_video && item.video_url) {
+                    postData.videoUrl = postData.videoUrl || item.video_url;
+                    postData.videoDuration = postData.videoDuration || (item.video_duration ? item.video_duration * 1000 : null);
+                    postData.videoViewCount = postData.videoViewCount || item.video_view_count || 0;
                 }
             }
-
-            postData.images = allImages;
+            if (allImages.length) postData.images = allImages;
         }
+
+// Robust extractors for engagement counts across different response shapes
+function toNumberOrNull(v) {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function getLikesCount(obj) {
+    // Try common GraphQL fields first, then mobile API
+    return (
+        toNumberOrNull(obj?.edge_media_preview_like?.count) ??
+        toNumberOrNull(obj?.edge_liked_by?.count) ??
+        toNumberOrNull(obj?.like_count) ??
+        toNumberOrNull(obj?.likes) ??
+        null
+    );
+}
+
+function getCommentsCount(obj) {
+    return (
+        toNumberOrNull(obj?.edge_media_to_comment?.count) ??
+        toNumberOrNull(obj?.edge_media_to_parent_comment?.count) ??
+        toNumberOrNull(obj?.comment_count) ??
+        toNumberOrNull(obj?.comments) ??
+        null
+    );
+}
+
 
         // Extract hashtags and mentions from caption
         if (postData.caption) {

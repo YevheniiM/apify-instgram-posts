@@ -1,0 +1,12 @@
+{
+  "directUrls": [
+    "https://www.instagram.com/nastiayakub/",
+    "https://www.instagram.com/nadyakalachova/",
+    "https://www.instagram.com/bagetiq/",
+    "https://www.instagram.com/kittie.aesthetics/"
+  ],
+  "maxPosts": 10000,
+  "includeStories": false,
+  "includeReels": false,
+  "includeIGTV": false
+}

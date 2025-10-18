@@ -50,6 +50,36 @@ export async function getUserIdViaAPI(username, session, log) {
     }
 }
 
+// Fetch full profile info via Mobile API (returns user object or null)
+export async function getProfileInfoViaAPI(username, session, log) {
+    try {
+        const headers = {
+            'User-Agent': 'Instagram 300.0.0.0 iOS',
+            'X-IG-App-ID': '936619743392459',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': '*/*',
+        };
+        const cookieString = session.getCookieString('https://www.instagram.com');
+        if (cookieString) headers.Cookie = cookieString;
+        const resp = await axios.get(`${MOBILE_PROFILE_API}${username}`, {
+            headers,
+            proxy: false,
+            timeout: 10000,
+            validateStatus: s => s < 500,
+        });
+        const user = resp?.data?.data?.user || null;
+        if (!user) {
+            log.debug(`Profile info API returned no user for ${username} (status ${resp?.status})`);
+            return null;
+        }
+        return user;
+    } catch (err) {
+        log.debug(`Profile info API error for ${username}: ${err.message}`);
+        return null;
+    }
+}
+
+
 // Initialize our custom cookie manager for guest cookies
 const guestCookieManager = new CookieManager();
 let cookieManagerInitialized = false;
@@ -101,6 +131,40 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
                     await session.setCookie(`${name}=${value}`, 'https://www.instagram.com');
                 }
                 log.info(`🔑 Applied guest cookies: ${Object.keys(guestCookieSet.cookies).join(', ')}`);
+
+
+        // Early check: if profile is private, record profile_info and skip
+        try {
+            const apiUser = await getProfileInfoViaAPI(username, session, log);
+            if (apiUser && apiUser.is_private === true) {
+                const privateInfo = {
+                    username,
+                    userId: apiUser.id || null,
+                    originalUrl,
+                    actualPostCount: null,
+                    discoveredPostCount: 0,
+                    targetPostCount: 0,
+                    isPrivate: true,
+                    onlyPostsNewerThan,
+                    maxPosts,
+                    includeReels,
+                    includeIGTV,
+                    discoveryLastCursor: null,
+                    discoveryBatches: 0,
+                    discoveryTotalRetries: 0,
+                    discoveryLastStatus: 'private',
+                    discoveryLastError: null,
+                    discoveryUsedAuthCookie: false
+                };
+                await Dataset.pushData({ type: 'profile_info', ...privateInfo });
+                log.info(`🔒 Profile ${username} is private – skipping discovery and extraction.`);
+                return;
+            }
+            // Seed userId from API if available
+            if (apiUser?.id) {
+                session.userData.userId = apiUser.id;
+            }
+        } catch (_) { /* non-fatal */ }
 
                 // Ensure fresh tokens
                 await cookieManager.ensureFreshTokens(guestCookieSet);

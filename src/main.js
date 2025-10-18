@@ -12,19 +12,26 @@ log.setLevel(log.LEVELS.INFO);
 
 // Proxy configuration will be created below
 
-// Get input from Actor or fallback to INPUT.json for local testing
+// Get input from Actor; only fall back to INPUT.json when running locally
+const env = Actor.getEnv();
 let input = await Actor.getInput();
 
-if (!input || typeof input === 'string' || (typeof input === 'object' && !input.directUrls)) {
-    // Fallback to reading INPUT.json directly for local testing
-    try {
-        const fs = await import('fs');
-        const inputJson = fs.readFileSync('./INPUT.json', 'utf8');
-        input = JSON.parse(inputJson);
-        log.info('Using INPUT.json for local testing');
-    } catch (error) {
-        log.error('Failed to read INPUT.json:', error.message);
+if (!input) {
+    if (env?.isAtHome) {
+        // In Apify cloud, do not read local INPUT.json; keep empty to trigger validation error
+        log.warning('Actor.getInput() returned empty in cloud; proceeding without fallback.');
         input = {};
+    } else {
+        // Local dev fallback
+        try {
+            const fs = await import('fs');
+            const inputJson = fs.readFileSync('./INPUT.json', 'utf8');
+            input = JSON.parse(inputJson);
+            log.info('Using INPUT.json for local testing');
+        } catch (error) {
+            log.error('Failed to read INPUT.json:', error.message);
+            input = {};
+        }
     }
 }
 log.info('Instagram Scraper - Two-Phase Production Architecture:', input);
@@ -238,46 +245,89 @@ log.info(`[Status message]: Starting the post scraper with ${postUrls.length} po
 
 // NEW: Prefer direct batch extraction via GraphQL (with robust fallback) to reduce cost
 try {
-    const profileUrl = input.directUrls[0];
-    const usernameFromUrl = (profileUrl.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1];
     const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
-    let discoveredShortcodes = postUrls
-        .map((item) => {
-            if (!item) return null;
-            if (typeof item === 'string') return (item.match(SHORTCODE_RE) || [])[1];
-            if (typeof item === 'object') {
-                return item.userData?.shortcode || (typeof item.url === 'string' ? (item.url.match(SHORTCODE_RE) || [])[1] : null);
-            }
-            return null;
-        })
-        .filter(Boolean);
-    // Deduplicate to avoid double-processing when Phase 1 re-runs or appends
-    discoveredShortcodes = Array.from(new Set(discoveredShortcodes));
 
-    if (usernameFromUrl && discoveredShortcodes.length > 0) {
-        log.info(`Using direct batch extraction for ${usernameFromUrl}: ${discoveredShortcodes.length} posts`);
+    // Group discovered shortcodes by originating username (from Phase 1)
+    const byUser = new Map(); // username -> { shortcodes: Set<string>, originalUrl: string|null }
+    const unknownShortcodes = new Set();
 
-        // Create a RequestQueue and push one request per batch of 25 shortcodes
+    for (const item of postUrls) {
+        if (!item) continue;
+        let sc = null;
+        let un = null;
+        let orig = null;
+        if (typeof item === 'string') {
+            sc = (item.match(SHORTCODE_RE) || [])[1] || null;
+        } else if (typeof item === 'object') {
+            sc = item.userData?.shortcode || (typeof item.url === 'string' ? ((item.url.match(SHORTCODE_RE) || [])[1] || null) : null);
+            un = item.userData?.username || null;
+            orig = item.userData?.originalUrl || (un ? `https://www.instagram.com/${un}/` : null);
+        }
+        if (!sc) continue;
+        if (un) {
+            const entry = byUser.get(un) || { shortcodes: new Set(), originalUrl: orig || null };
+            entry.shortcodes.add(sc);
+            if (!entry.originalUrl && orig) entry.originalUrl = orig;
+            byUser.set(un, entry);
+        } else {
+            unknownShortcodes.add(sc);
+        }
+    }
+
+    // If we have any grouped users, enqueue batches per user; otherwise fallback to legacy single-username path
+    if (byUser.size > 0 || unknownShortcodes.size > 0) {
         const requestQueue = await RequestQueue.open();
         const batchSize = 25;
-        let enqueued = 0;
-        for (let i = 0; i < discoveredShortcodes.length; i += batchSize) {
-            const slice = discoveredShortcodes.slice(i, i + batchSize);
-            const batchIndex = Math.floor(i / batchSize);
-            const result = await requestQueue.addRequest({
-                url: `https://www.instagram.com/?batch=${batchIndex}`,
-                uniqueKey: `batch_posts:${usernameFromUrl}:${batchIndex}`,
-                userData: {
-                    type: 'batch_posts',
-                    username: usernameFromUrl,
-                    shortcodes: slice,
-                    maxPosts: input.maxPosts || null,
-                    onlyPostsNewerThan: input.onlyPostsNewerThan || null,
-                }
-            });
-            if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) enqueued++;
+        let totalEnqueued = 0;
+
+        // Enqueue per known username
+        for (const [username, entry] of byUser.entries()) {
+            const scList = Array.from(entry.shortcodes);
+            log.info(`Using direct batch extraction for ${username}: ${scList.length} posts`);
+            for (let i = 0; i < scList.length; i += batchSize) {
+                const slice = scList.slice(i, i + batchSize);
+                const batchIndex = Math.floor(i / batchSize);
+                const result = await requestQueue.addRequest({
+                    url: `https://www.instagram.com/?batch=${username}-${batchIndex}`,
+                    uniqueKey: `batch_posts:${username}:${batchIndex}`,
+                    userData: {
+                        type: 'batch_posts',
+                        username,
+                        shortcodes: slice,
+                        maxPosts: input.maxPosts || null,
+                        onlyPostsNewerThan: input.onlyPostsNewerThan || null,
+                        originalUrl: entry.originalUrl || null,
+                    }
+                });
+                if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) totalEnqueued++;
+            }
         }
-        log.info(`Phase 2 queueing: enqueued ${enqueued} batch requests of up to ${batchSize} posts each for ${usernameFromUrl} (total shortcodes: ${discoveredShortcodes.length}).`);
+
+        // If there are shortcodes without username (should be rare), process them under a synthetic group
+        if (unknownShortcodes.size > 0) {
+            const scList = Array.from(unknownShortcodes);
+            const syntheticUsername = (input.directUrls?.[0]?.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1] || 'unknown';
+            log.info(`Using direct batch extraction for ${syntheticUsername} (unknown attribution): ${scList.length} posts`);
+            for (let i = 0; i < scList.length; i += batchSize) {
+                const slice = scList.slice(i, i + batchSize);
+                const batchIndex = Math.floor(i / batchSize);
+                const result = await requestQueue.addRequest({
+                    url: `https://www.instagram.com/?batch=${syntheticUsername}-${batchIndex}`,
+                    uniqueKey: `batch_posts:${syntheticUsername}:${batchIndex}`,
+                    userData: {
+                        type: 'batch_posts',
+                        username: syntheticUsername,
+                        shortcodes: slice,
+                        maxPosts: input.maxPosts || null,
+                        onlyPostsNewerThan: input.onlyPostsNewerThan || null,
+                        originalUrl: input.directUrls?.[0] || null,
+                    }
+                });
+                if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) totalEnqueued++;
+            }
+        }
+
+        log.info(`Phase 2 queueing: enqueued ${totalEnqueued} batch requests of up to ${batchSize} posts each across ${byUser.size} profile(s).`);
 
         const postBatchCrawler = new CheerioCrawler({
             proxyConfiguration,
