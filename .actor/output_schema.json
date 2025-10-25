@@ -13,13 +13,13 @@
         "type": {
             "title": "Post Type",
             "type": "string",
-            "description": "Type of Instagram post",
+            "description": "Type of Instagram post: Image, Video, Sidecar (carousel), or profile_info",
             "template": "{{type}}"
         },
         "shortCode": {
             "title": "Short Code",
             "type": "string",
-            "description": "Instagram post shortcode",
+            "description": "Instagram post shortcode (used in URLs)",
             "template": "{{shortCode}}"
         },
         "url": {
@@ -40,28 +40,100 @@
             "description": "Post caption text",
             "template": "{{caption}}"
         },
+        "alt": {
+            "title": "Alt Text",
+            "type": ["string", "null"],
+            "description": "Accessibility alt text for the post",
+            "template": "{{alt}}"
+        },
+        "hashtags": {
+            "title": "Hashtags",
+            "type": "array",
+            "description": "Array of hashtags (without # symbol)",
+            "template": "{{hashtags}}"
+        },
+        "mentions": {
+            "title": "Mentions",
+            "type": "array",
+            "description": "Array of mentioned usernames (without @ symbol)",
+            "template": "{{mentions}}"
+        },
+        "sponsors": {
+            "title": "Sponsors",
+            "type": "array",
+            "description": "Array of sponsored/tagged business accounts",
+            "template": "{{sponsors}}"
+        },
         "likesCount": {
             "title": "Likes Count",
-            "type": "string",
+            "type": "number",
             "description": "Number of likes on the post",
             "template": "{{likesCount}}"
         },
         "commentsCount": {
             "title": "Comments Count",
-            "type": "string",
+            "type": "number",
             "description": "Number of comments on the post",
             "template": "{{commentsCount}}"
+        },
+        "videoViewCount": {
+            "title": "Video View Count",
+            "type": "number",
+            "description": "Number of video views (0 for non-videos)",
+            "template": "{{videoViewCount}}"
         },
         "displayUrl": {
             "title": "Display URL",
             "type": "string",
-            "description": "URL of the main display image",
+            "description": "URL of the main display image/thumbnail",
             "template": "{{displayUrl}}"
+        },
+        "images": {
+            "title": "Images",
+            "type": "array",
+            "description": "Array of all image URLs in the post",
+            "template": "{{images}}"
+        },
+        "videoUrl": {
+            "title": "Video URL",
+            "type": ["string", "null"],
+            "description": "Video URL (null for non-videos)",
+            "template": "{{videoUrl}}"
+        },
+        "videoDuration": {
+            "title": "Video Duration",
+            "type": ["number", "null"],
+            "description": "Video duration in milliseconds (null for non-videos)",
+            "template": "{{videoDuration}}"
+        },
+        "dimensionsHeight": {
+            "title": "Height",
+            "type": "number",
+            "description": "Height in pixels",
+            "template": "{{dimensionsHeight}}"
+        },
+        "dimensionsWidth": {
+            "title": "Width",
+            "type": "number",
+            "description": "Width in pixels",
+            "template": "{{dimensionsWidth}}"
+        },
+        "paidPartnership": {
+            "title": "Paid Partnership",
+            "type": "boolean",
+            "description": "Instagram's official paid partnership flag",
+            "template": "{{paidPartnership}}"
+        },
+        "isSponsored": {
+            "title": "Is Sponsored",
+            "type": "boolean",
+            "description": "Alternative sponsored content indicator",
+            "template": "{{isSponsored}}"
         },
         "username": {
             "title": "Username",
             "type": "string",
-            "description": "Username of the post owner",
+            "description": "Username of the profile being scraped",
             "template": "{{username}}"
         },
         "inputUrl": {

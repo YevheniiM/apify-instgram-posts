@@ -83,76 +83,129 @@ apify run --input-file INPUT.json
 
 The scraper outputs comprehensive post data with the following structure:
 
-#### Post Data (Primary Output)
+#### Post Data Fields
+
+**Core Fields (always present):**
 ```json
 {
-    "type": "post",
-    "postType": "image",
-    "username": "instagram",
-    "shortcode": "ABC123XYZ",
-    "id": "123456789012345",
-    "url": "https://www.instagram.com/p/ABC123XYZ/",
-
-    "displayUrl": "https://scontent.cdninstagram.com/...",
-    "mediaUrls": ["https://scontent.cdninstagram.com/..."],
-
-    "caption": "Amazing sunset! #photography #nature",
+    "id": "3750655667658124865",
+    "type": "Video",
+    "shortCode": "DQNAXU5kW5B",
+    "url": "https://www.instagram.com/p/DQNAXU5kW5B/",
+    "timestamp": "2025-10-24T19:13:06.000Z",
+    "caption": "Amazing sunset! 🌅\n\n#photography #nature",
+    "alt": null,
     "hashtags": ["photography", "nature"],
     "mentions": ["photographer"],
-    "accessibilityCaption": "Photo of a sunset over mountains",
-
-    "likesCount": 50000,
-    "commentsCount": 1200,
-    "viewsCount": null,
-    "playsCount": null,
-
-    "takenAt": "2025-01-15T14:30:00.000Z",
-    "takenAtTimestamp": 1737814200,
-    "isVideo": false,
-    "hasAudio": false,
-
-    "location": {
-        "id": "123456",
-        "name": "Yosemite National Park",
-        "slug": "yosemite-national-park",
-        "hasPublicPage": true,
-        "address": {...}
-    },
-
-    "taggedUsers": [
-        {
-            "username": "photographer",
-            "fullName": "John Photographer",
-            "isVerified": false,
-            "position": {"x": 0.5, "y": 0.3}
-        }
+    "sponsors": [],
+    "likesCount": 243750,
+    "commentsCount": 3248,
+    "videoViewCount": 0,
+    "displayUrl": "https://instagram.fksc1-1.fna.fbcdn.net/...",
+    "images": [
+        "https://instagram.fksc1-1.fna.fbcdn.net/..."
     ],
-
-    "dimensions": {"height": 1080, "width": 1080},
-    "commentsDisabled": false,
-    "likingDisabled": false,
+    "videoUrl": null,
+    "videoDuration": null,
+    "dimensionsHeight": 1920,
+    "dimensionsWidth": 1080,
+    "paidPartnership": false,
     "isSponsored": false,
-
-    "scrapedAt": "2025-01-20T10:30:00.000Z",
-    "profileUrl": "https://www.instagram.com/instagram/"
+    "inputUrl": "https://www.instagram.com/instagram/",
+    "username": "instagram"
 }
 ```
 
-#### Carousel Posts
-For carousel posts (multiple images/videos), additional fields are included:
+#### Field Descriptions
+
+| Field | Type | Description | Always Present |
+|-------|------|-------------|----------------|
+| `id` | string | Unique Instagram post ID | ✅ |
+| `type` | string | Post type: `"Image"`, `"Video"`, or `"Sidecar"` (carousel) | ✅ |
+| `shortCode` | string | Instagram post shortcode (used in URLs) | ✅ |
+| `url` | string | Direct URL to the Instagram post | ✅ |
+| `timestamp` | string | ISO 8601 timestamp when post was created | ✅ |
+| `caption` | string | Post caption text | ✅ |
+| `alt` | string \| null | Accessibility alt text | ✅ |
+| `hashtags` | string[] | Array of hashtags (without #) | ✅ |
+| `mentions` | string[] | Array of mentioned usernames (without @) | ✅ |
+| `sponsors` | string[] | Array of sponsored/tagged business accounts | ✅ |
+| `likesCount` | number | Number of likes | ✅ |
+| `commentsCount` | number | Number of comments | ✅ |
+| `videoViewCount` | number | Video view count (0 for non-videos) | ✅ |
+| `displayUrl` | string | URL of the main display image/thumbnail | ✅ |
+| `images` | string[] | Array of all image URLs in the post | ✅ |
+| `videoUrl` | string \| null | Video URL (null for non-videos) | ✅ |
+| `videoDuration` | number \| null | Video duration in milliseconds (null for non-videos) | ✅ |
+| `dimensionsHeight` | number | Height in pixels | ✅ |
+| `dimensionsWidth` | number | Width in pixels | ✅ |
+| `paidPartnership` | boolean | Instagram's official paid partnership flag | ✅ |
+| `isSponsored` | boolean | Alternative sponsored content indicator | ✅ |
+| `inputUrl` | string | Original profile URL that was scraped | ✅ |
+| `username` | string | Username of the profile being scraped | ✅ |
+
+#### Post Type Examples
+
+**Image Post:**
 ```json
 {
-    "postType": "carousel",
-    "carouselItems": [
-        {
-            "id": "item1_id",
-            "shortcode": "item1_shortcode",
-            "displayUrl": "https://...",
-            "isVideo": false,
-            "videoUrl": null,
-            "dimensions": {"height": 1080, "width": 1080}
-        }
-    ]
+    "type": "Image",
+    "images": ["https://instagram.fksc1-1.fna.fbcdn.net/..."],
+    "videoUrl": null,
+    "videoDuration": null,
+    "videoViewCount": 0
+}
+```
+
+**Video Post:**
+```json
+{
+    "type": "Video",
+    "images": ["https://instagram.fksc1-1.fna.fbcdn.net/..."],
+    "videoUrl": "https://instagram.fksc1-1.fna.fbcdn.net/...",
+    "videoDuration": 15000,
+    "videoViewCount": 8711638
+}
+```
+
+**Carousel Post (Sidecar):**
+```json
+{
+    "type": "Sidecar",
+    "images": [
+        "https://instagram.fksc1-1.fna.fbcdn.net/image1.jpg",
+        "https://instagram.fksc1-1.fna.fbcdn.net/image2.jpg",
+        "https://instagram.fksc1-1.fna.fbcdn.net/image3.jpg"
+    ],
+    "videoUrl": null,
+    "videoDuration": null,
+    "videoViewCount": 0
+}
+```
+
+**Profile Info Record:**
+
+In addition to post records, the scraper outputs one profile info record per profile:
+```json
+{
+    "type": "profile_info",
+    "username": "instagram",
+    "userId": "25025320",
+    "originalUrl": "https://www.instagram.com/instagram/",
+    "actualPostCount": 8202,
+    "discoveredPostCount": 50,
+    "targetPostCount": 50,
+    "isPrivate": false,
+    "onlyPostsNewerThan": "2025-10-17T00:00:00.000Z",
+    "maxPosts": 50,
+    "includeReels": true,
+    "includeIGTV": false,
+    "discoveryLastCursor": "3718760118701141625_25025320",
+    "discoveryBatches": 5,
+    "discoveryTotalRetries": 0,
+    "discoveryLastStatus": 200,
+    "discoveryLastError": null,
+    "discoveryUsedAuthCookie": true
 }
 ```
 

@@ -156,7 +156,14 @@ if (response.status === 401 || response.status === 403) {
 
 ### 5) Accurate data extraction
 
-- GraphQL field xdt_shortcode_media mapped to normalized post object: captions, hashtags, mentions, media URLs, carousel items, counts, timestamps, location, tagging.
+- GraphQL field xdt_shortcode_media mapped to normalized post object with the following fields:
+  - Core: id, type (Image/Video/Sidecar), shortCode, url, timestamp
+  - Content: caption, alt, hashtags, mentions, sponsors
+  - Engagement: likesCount, commentsCount, videoViewCount
+  - Media: displayUrl, images (array), videoUrl, videoDuration (ms)
+  - Dimensions: dimensionsHeight, dimensionsWidth
+  - Business: paidPartnership, isSponsored
+  - Context: username, inputUrl
 
 <augment_code_snippet path="src/routes.js" mode="EXCERPT">
 ````javascript
