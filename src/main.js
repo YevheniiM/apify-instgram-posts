@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { CheerioCrawler, RequestQueue, log } from 'crawlee';
+import { CheerioCrawler, RequestQueue, log, Dataset } from 'crawlee';
 
 // Two-phase architecture - exactly like production Apify scraper
 import { profileRouter } from './profile-router.js';
@@ -64,7 +64,7 @@ const minConcurrency = 1;  // Production starts at 1
 
 // Production session pool configuration (optimized for residential proxies)
 const sessionPoolOptions = {
-    maxPoolSize: 80, // Optimized for residential proxy rotation (from memories: 50-80)
+    maxPoolSize: 30, // Reduced to 30 to cut overhead while staying robust
     sessionOptions: {
         maxUsageCount: 20, // Conservative rotation for Instagram (from memories: 20-50 requests)
         maxErrorScore: 3,
@@ -123,11 +123,24 @@ if (profileUrls.length === 0) {
     await Actor.exit();
 }
 
-// Check if Phase 1 already completed in a previous run (migration resume)
-const existingPostUrlsKV = await Actor.getValue('POST_URLS') || [];
-const phase1AlreadyCompleted = Array.isArray(existingPostUrlsKV) && existingPostUrlsKV.length > 0;
+// Discovery state check (per-username) - only skip Phase 1 when completed === true AND DISC_ looks sane
+const discoveryState = await Actor.getValue('DISCOVERY_STATE') || {};
+const usernames = profileUrls.map(r => r.userData.username);
+let needPhase1 = false;
+for (const un of usernames) {
+    const state = discoveryState?.[un] || {};
+    const completed = state?.completed === true;
+    const discList = (await Actor.getValue(`DISC_${un}`)) || [];
+    const expected = Number(state?.expectedCount) || null;
+    // Sanity: if DISC_ is empty or suspiciously small vs expected (or below a small threshold), force Phase 1
+    const looksTooSmall = expected ? (discList.length < Math.min(Math.floor(expected * 0.6), 100)) : (discList.length < 20);
+    if (!completed || discList.length === 0 || looksTooSmall) {
+        needPhase1 = true;
+        break;
+    }
+}
 
-if (!phase1AlreadyCompleted) {
+if (needPhase1) {
 
 // PHASE 1: Direct URL scraper (Profile Discovery)
 log.info(`[Status message]: Starting the direct URL scraper with ${profileUrls.length} direct URL(s)`);
@@ -231,201 +244,127 @@ await profileCrawler.run(profileUrls);
 
 log.info(`[Status message]: Direct URL scraper finished`);
 
-// PHASE 2: Posts scraper (Post Extraction)
-// Get discovered post URLs from the profile phase
-const postUrls = await Actor.getValue('POST_URLS') || [];
+// PHASE 2: Batch post extraction using RequestQueue (consuming discovery results)
+const phase2QueueName = `phase-2-${(Actor.getEnv()?.actorRunId || 'local')}`;
+const requestQueue = await RequestQueue.open(phase2QueueName);
+const batchSize = 25;
+let totalEnqueued = 0;
 
-if (postUrls.length === 0) {
-    log.warning('No post URLs discovered in Phase 1. Exiting.');
-    await Actor.exit();
-}
-
-log.info(`[Status message]: Starting posts scraper with ${postUrls.length} direct URL(s)`);
-log.info(`[Status message]: Starting the post scraper with ${postUrls.length} post URL(s)`);
-
-// NEW: Prefer direct batch extraction via GraphQL (with robust fallback) to reduce cost
-try {
-    const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
-
-    // Group discovered shortcodes by originating username (from Phase 1)
-    const byUser = new Map(); // username -> { shortcodes: Set<string>, originalUrl: string|null }
-    const unknownShortcodes = new Set();
-
-    for (const item of postUrls) {
-        if (!item) continue;
-        let sc = null;
-        let un = null;
-        let orig = null;
-        if (typeof item === 'string') {
-            sc = (item.match(SHORTCODE_RE) || [])[1] || null;
-        } else if (typeof item === 'object') {
-            sc = item.userData?.shortcode || (typeof item.url === 'string' ? ((item.url.match(SHORTCODE_RE) || [])[1] || null) : null);
-            un = item.userData?.username || null;
-            orig = item.userData?.originalUrl || (un ? `https://www.instagram.com/${un}/` : null);
-        }
-        if (!sc) continue;
-        if (un) {
-            const entry = byUser.get(un) || { shortcodes: new Set(), originalUrl: orig || null };
-            entry.shortcodes.add(sc);
-            if (!entry.originalUrl && orig) entry.originalUrl = orig;
-            byUser.set(un, entry);
-        } else {
-            unknownShortcodes.add(sc);
-        }
+for (const url of input.directUrls) {
+    const m = url.match(/instagram\.com\/([^\/?]+)/i);
+    if (!m) continue;
+    const username = m[1];
+    const scList = (await Actor.getValue(`DISC_${username}`)) || [];
+    if (!Array.isArray(scList) || scList.length === 0) {
+        log.warning(`No discovered shortcodes found for ${username}.`);
+        continue;
     }
-
-    // If we have any grouped users, enqueue batches per user; otherwise fallback to legacy single-username path
-    if (byUser.size > 0 || unknownShortcodes.size > 0) {
-        const requestQueue = await RequestQueue.open();
-        const batchSize = 25;
-        let totalEnqueued = 0;
-
-        // Enqueue per known username
-        for (const [username, entry] of byUser.entries()) {
-            const scList = Array.from(entry.shortcodes);
-            log.info(`Using direct batch extraction for ${username}: ${scList.length} posts`);
-            for (let i = 0; i < scList.length; i += batchSize) {
-                const slice = scList.slice(i, i + batchSize);
-                const batchIndex = Math.floor(i / batchSize);
-                const result = await requestQueue.addRequest({
-                    url: `https://www.instagram.com/?batch=${username}-${batchIndex}`,
-                    uniqueKey: `batch_posts:${username}:${batchIndex}`,
-                    userData: {
-                        type: 'batch_posts',
-                        username,
-                        shortcodes: slice,
-                        maxPosts: input.maxPosts || null,
-                        onlyPostsNewerThan: input.onlyPostsNewerThan || null,
-                        originalUrl: entry.originalUrl || null,
-                    }
-                });
-                if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) totalEnqueued++;
-            }
-        }
-
-        // If there are shortcodes without username (should be rare), process them under a synthetic group
-        if (unknownShortcodes.size > 0) {
-            const scList = Array.from(unknownShortcodes);
-            const syntheticUsername = (input.directUrls?.[0]?.match(/instagram\.com\/([^\/]+)\/?/i) || [])[1] || 'unknown';
-            log.info(`Using direct batch extraction for ${syntheticUsername} (unknown attribution): ${scList.length} posts`);
-            for (let i = 0; i < scList.length; i += batchSize) {
-                const slice = scList.slice(i, i + batchSize);
-                const batchIndex = Math.floor(i / batchSize);
-                const result = await requestQueue.addRequest({
-                    url: `https://www.instagram.com/?batch=${syntheticUsername}-${batchIndex}`,
-                    uniqueKey: `batch_posts:${syntheticUsername}:${batchIndex}`,
-                    userData: {
-                        type: 'batch_posts',
-                        username: syntheticUsername,
-                        shortcodes: slice,
-                        maxPosts: input.maxPosts || null,
-                        onlyPostsNewerThan: input.onlyPostsNewerThan || null,
-                        originalUrl: input.directUrls?.[0] || null,
-                    }
-                });
-                if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) totalEnqueued++;
-            }
-        }
-
-        log.info(`Phase 2 queueing: enqueued ${totalEnqueued} batch requests of up to ${batchSize} posts each across ${byUser.size} profile(s).`);
-
-        const postBatchCrawler = new CheerioCrawler({
-            proxyConfiguration,
-            maxConcurrency, // allow parallel batches
-            useSessionPool: true,
-            persistCookiesPerSession: true,
-            sessionPoolOptions,
-            requestQueue,
-            requestHandlerTimeoutSecs: 180,
-            maxRequestRetries: 2,
-            retryOnBlocked: true,
-            requestHandler: postRouter,
-            statisticsOptions: {
-                logIntervalSecs: 60,
-                logMessage: 'CheerioCrawler request statistics'
+    for (let i = 0; i < scList.length; i += batchSize) {
+        const slice = scList.slice(i, i + batchSize);
+        const batchIndex = Math.floor(i / batchSize);
+        const result = await requestQueue.addRequest({
+            url: `https://www.instagram.com/?batch=${username}-${batchIndex}`,
+            uniqueKey: `batch_posts:${username}:${batchIndex}`,
+            userData: {
+                type: 'batch_posts',
+                username,
+                shortcodes: slice,
+                originalUrl: `https://www.instagram.com/${username}/`,
+                maxPosts: input.maxPosts || null,
+                onlyPostsNewerThan: input.onlyPostsNewerThan || null,
             }
         });
-
-        await postBatchCrawler.run();
-
-        log.info('Post batch extraction finished');
-        log.info('🎉 All done, shutting down');
-        await Actor.exit();
+        if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) totalEnqueued++;
     }
-} catch (e) {
-    log.warning(`Direct batch extraction path failed to initialize, falling back to per-URL crawling: ${e.message}`);
 }
 
-// Fallback: per-URL crawling (existing behavior)
-const postCrawler = new CheerioCrawler({
+log.info(`Phase 2 queueing: enqueued ${totalEnqueued} batch requests (idempotent)`);
+
+const postBatchCrawler = new CheerioCrawler({
     proxyConfiguration,
-    maxConcurrency, // Production max: 12
-    // Production session management (Apify playbook)
+    maxConcurrency,
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions,
-    // Enhanced production settings for residential proxies
-    requestHandlerTimeoutSecs: 60,
-    maxRequestRetries: 3,
+    requestQueue,
+    requestHandlerTimeoutSecs: 180,
+    maxRequestRetries: 2,
     retryOnBlocked: true,
     requestHandler: postRouter,
-    // Enable production statistics logging (matching exact format)
     statisticsOptions: {
-        logIntervalSecs: 60, // Match production: every 60 seconds
+        logIntervalSecs: 60,
         logMessage: 'CheerioCrawler request statistics'
-    },
-    // AutoscaledPool configuration matching production logs
-    autoscaledPoolOptions: {
-        minConcurrency: 8, // Start with higher concurrency
-        maxConcurrency: maxConcurrency, // Scales up to 12
-        desiredConcurrency: 10, // Start with moderate concurrency
-        scaleUpStepRatio: 0.2, // Faster scaling up
-        scaleDownStepRatio: 0.05, // Conservative scale down
-        maybeRunIntervalSecs: 0.5, // Frequent scaling decisions
-        loggingIntervalSecs: 60, // Match production logging interval
-        snapshotterOptions: {
-            eventLoopSnapshotIntervalSecs: 0.5,
-            maxBlockedMillis: 100
-        }
-    },
-    failedRequestHandler: async ({ request, error, session }) => {
-        log.error(`Post extraction failed: ${request.url}`, error.message);
-
-        // Enhanced production session rotation with rate limiting backoff
-        if (error.message.includes('blocked') || error.message.includes('403') || error.message.includes('429')) {
-            log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Request blocked, retrying it again with different session`);
-            log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
-            session.retire();
-
-            // Add exponential backoff for rate limiting (production optimization)
-            if (error.message.includes('429')) {
-                const delay = Math.min(30000, 1000 * Math.pow(2, request.retryCount || 0));
-                log.info(`Rate limited - applying exponential backoff: ${delay}ms`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-        } else if (error.message.includes('timeout') || error.message.includes('ECONNRESET')) {
-            log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Timeout awaiting 'request' for 30000ms`);
-            log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
-            session.retire();
-        } else if (error.message.includes('590') || error.message.includes('UPSTREAM502')) {
-            log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. The proxy server rejected the request with status code 590 (UPSTREAM502)`);
-            log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
-            session.retire();
-        } else if (error.message.includes('595') || error.message.includes('ECONNRESET')) {
-            log.warning(`CheerioCrawler: Reclaiming failed request back to the list or queue. Detected a session error, rotating session...`);
-            log.warning(`The proxy server rejected the request with status code 595 (ECONNRESET)`);
-            log.warning(`{"id":"${request.id}","url":"${request.url}","retryCount":${request.retryCount || 1}}`);
-            session.retire();
-        }
     }
 });
 
-// Run Phase 2: Post Extraction
-await postCrawler.run(postUrls);
+await postBatchCrawler.run();
+log.info('Post batch extraction finished');
 
-// The statistics are already logged automatically by CheerioCrawler
-// No need to manually log them again
+// Reconciliation pass: re-enqueue missing shortcodes for a final single-post pass
+let missingTotal = 0;
+for (const url of input.directUrls) {
+    const m = url.match(/instagram\.com\/([^\/\?]+)/i);
+    if (!m) continue;
+    const username = m[1];
+    const discovered = (await Actor.getValue(`DISC_${username}`)) || [];
+    const extracted = (await Actor.getValue(`EXTR_${username}`)) || [];
+    const extractedSet = new Set(extracted);
+    const missing = discovered.filter(sc => !extractedSet.has(sc));
+    if (missing.length > 0) {
+        missingTotal += missing.length;
+        log.info(`Re-enqueueing ${missing.length} missing posts for ${username} (final pass)`);
+        for (const sc of missing) {
+            await requestQueue.addRequest({
+                url: `https://www.instagram.com/p/${sc}/`,
+                uniqueKey: `single_post:${username}:${sc}`,
+                userData: { type: 'post_extraction', username, shortcode: sc, originalUrl: `https://www.instagram.com/${username}/` }
+            });
+        }
+    }
+}
 
-// 🎯 CRITICAL FIX: Stop the actor cleanly to prevent infinite runtime costs
+// Run final single-post pass only if we actually enqueued missing items
+if (missingTotal > 0) {
+    const postFallbackCrawler = new CheerioCrawler({
+        proxyConfiguration,
+        maxConcurrency,
+        useSessionPool: true,
+        persistCookiesPerSession: true,
+        sessionPoolOptions,
+        requestQueue,
+        requestHandlerTimeoutSecs: 60,
+        maxRequestRetries: 3,
+        retryOnBlocked: true,
+        requestHandler: postRouter,
+        statisticsOptions: { logIntervalSecs: 60, logMessage: 'CheerioCrawler request statistics' },
+    });
+    await postFallbackCrawler.run();
+} else {
+    log.info('No missing posts detected; skipping postFallbackCrawler.');
+}
+
+// Completeness monitoring: emit profile_summary
+const discoveryState2 = await Actor.getValue('DISCOVERY_STATE') || {};
+for (const url of input.directUrls) {
+    const m = url.match(/instagram\.com\/([^\/\?]+)/i);
+    if (!m) continue;
+    const username = m[1];
+    const expectedCount = discoveryState2?.[username]?.expectedCount ?? null;
+    const discovered = (await Actor.getValue(`DISC_${username}`)) || [];
+    const extracted = (await Actor.getValue(`EXTR_${username}`)) || [];
+    const missingCount = Math.max(0, discovered.length - extracted.length);
+    const missingSample = missingCount > 0 ? discovered.filter(sc => !(new Set(extracted)).has(sc)).slice(0, 10) : [];
+    await Dataset.pushData({
+        type: 'profile_summary',
+        username,
+        expectedCount,
+        discoveredCount: discovered.length,
+        extractedCount: extracted.length,
+        missingCount,
+        missingSample,
+        scrapedAt: new Date().toISOString(),
+    });
+}
+
 log.info('🎉 All done, shutting down');
-await Actor.exit(); // Guarantees container stops billing
+await Actor.exit();

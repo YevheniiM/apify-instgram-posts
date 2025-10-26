@@ -1,7 +1,9 @@
-import { createCheerioRouter, Dataset } from 'crawlee';
+import { createCheerioRouter, Dataset, log } from 'crawlee';
 import moment from 'moment';
 import { discoverPosts, isValidShortcode } from './post-discovery.js';
 import { SHORTCODE_DOC_ID } from './constants.js';
+
+import { Actor } from 'apify';
 
 // Create router for post extraction
 export const postRouter = createCheerioRouter();
@@ -59,6 +61,61 @@ class SmartThrottling {
 // Global throttling manager
 const throttling = new SmartThrottling();
 
+// In-run idempotency and serialized KV updates to prevent duplicates and races
+const inRunSavedShortcodes = new Set(); // global set of shortcodes saved to Dataset during this run
+const userLocks = new Map(); // per-username promise chains to serialize KV writes
+
+async function withUserLock(username, fn) {
+    const prev = userLocks.get(username) || Promise.resolve();
+    const next = prev.then(async () => {
+        return await fn();
+    });
+    // ensure the chain continues even if fn throws
+    userLocks.set(username, next.catch(() => {}));
+    return next;
+}
+
+async function markExtractedKV(username, shortcode) {
+    if (!username || !shortcode) return;
+    await withUserLock(username, async () => {
+        const key = `EXTR_${username}`;
+        const prev = await Actor.getValue(key) || [];
+        const set = new Set(prev);
+        if (!set.has(shortcode)) {
+            set.add(shortcode);
+            await Actor.setValue(key, Array.from(set));
+        }
+    });
+}
+
+async function savePostIfNew(username, postData) {
+    try {
+        const scFromData = postData?.shortCode || postData?.shortcode;
+        let sc = scFromData;
+        if (!sc && postData?.url) {
+            const m = String(postData.url).match(/\/p\/([^\/\?]+)/);
+            if (m) sc = m[1];
+        }
+        if (!sc) {
+            try { log.debug(`savePostIfNew: missing shortcode, keys=${Object.keys(postData||{}).join(',')}`); } catch {}
+            return false;
+        }
+        if (inRunSavedShortcodes.has(sc)) return false;
+        inRunSavedShortcodes.add(sc);
+        try {
+            await Dataset.pushData(postData);
+            await markExtractedKV(username, sc);
+            return true;
+        } catch (e) {
+            inRunSavedShortcodes.delete(sc);
+            throw e;
+        }
+    } catch (_) {
+        return false;
+    }
+}
+
+
 // Advanced Cookie Management for production-scale scraping
 export class CookieManager {
     static instance;
@@ -82,7 +139,7 @@ export class CookieManager {
         console.log(`🚀 Initializing guest cookie factory for public Instagram scraping`);
 
         // Create guest cookie jars for each proxy/session
-        const guestCookieCount = 30; // Increased to 30 guest jars to reduce pool exhaustion under throttling
+        const guestCookieCount = 8; // Reduced to 8 to cut overhead; reuse pools more
 
 
         for (let i = 1; i <= guestCookieCount; i++) {
@@ -765,11 +822,17 @@ async function extractSinglePostViaGraphQL(shortcode, username, originalUrl, log
             log.info(`🔍 Post ${shortcode} response status: ${response.status}, data keys: ${Object.keys(jsonResponse || {}).join(', ')}`);
 
             if (jsonResponse.errors) {
-                if (attempt < maxRetries) {
-                    log.warning(`Post ${shortcode} GraphQL errors (attempt ${attempt}): ${JSON.stringify(jsonResponse.errors)}`);
-                    throw new Error(`GraphQL errors - retry needed`);
+                const candidate = jsonResponse?.data?.xdt_shortcode_media;
+                if (candidate) {
+                    log.warning(`Post ${shortcode} GraphQL errors present but data exists; proceeding. errors=${JSON.stringify(jsonResponse.errors)}`);
+                    // proceed using candidate
+                } else {
+                    if (attempt < maxRetries) {
+                        log.warning(`Post ${shortcode} GraphQL errors with no data (attempt ${attempt}): ${JSON.stringify(jsonResponse.errors)}`);
+                        throw new Error(`GraphQL errors - retry needed`);
+                    }
+                    return { shortcode, error: 'GraphQL errors after retries', data: null };
                 }
-                return { shortcode, error: 'GraphQL errors after retries', data: null };
             }
 
             const post = jsonResponse?.data?.xdt_shortcode_media;
@@ -876,12 +939,12 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                 }
             }
 
-            // Save batch results
+            // Save batch results with idempotency and serialized KV updates
             let saved = 0;
             for (const postData of batchResults) {
                 if (postData) {
-                    await Dataset.pushData(postData);
-                    saved++;
+                    const savedNow = await savePostIfNew(username, postData);
+                    if (savedNow) saved++;
                 }
             }
 
@@ -976,13 +1039,17 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                         }
                     }
 
-                    // Save all successful results
+                    // Save all successful results with idempotency
                     for (const postData of batchResults) {
                         if (postData) {
-                            await Dataset.pushData(postData);
-                            postsProcessed++;
-                            if (postData.shortCode) savedShortcodes.add(postData.shortCode);
-                            log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
+                            const savedNow = await savePostIfNew(username, postData);
+                            if (savedNow) {
+                                postsProcessed++;
+                                if (postData.shortCode) savedShortcodes.add(postData.shortCode);
+                                log.debug(`Saved post ${postData.shortCode} from ${username} (${postData.type}, ${postData.likesCount} likes)`);
+                            } else {
+                                log.debug(`Skipped duplicate ${postData.shortCode}`);
+                            }
                         }
                     }
 
@@ -1036,9 +1103,11 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
                     }
                     for (const postData of recovResults) {
                         if (postData && !savedShortcodes.has(postData.shortCode)) {
-                            await Dataset.pushData(postData);
-                            postsProcessed++;
-                            savedShortcodes.add(postData.shortCode);
+                            const savedNow = await savePostIfNew(username, postData);
+                            if (savedNow) {
+                                postsProcessed++;
+                                savedShortcodes.add(postData.shortCode);
+                            }
                         }
                     }
                     // Persist progress after recovery additions as well
@@ -1088,8 +1157,12 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     try {
         const mobileData = await extractPostViaMobileAPI(shortcode, username, originalUrl, log, session);
         if (mobileData) {
-            await Dataset.pushData(mobileData);
-            log.info(`Successfully extracted post via Mobile API: ${shortcode}`);
+            const savedNow = await savePostIfNew(username, mobileData);
+            if (savedNow) {
+                log.info(`Successfully extracted post via Mobile API: ${shortcode}`);
+            } else {
+                log.debug(`Skipped duplicate (Mobile API) for ${shortcode}`);
+            }
             return;
         }
     } catch (e) {
@@ -1104,8 +1177,12 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
         try {
             const htmlData = await extractPostViaHTML(shortcode, username, originalUrl, log, session);
             if (htmlData) {
-                await Dataset.pushData(htmlData);
-                log.info(`Successfully extracted post via HTML: ${shortcode}`);
+                const savedNow = await savePostIfNew(username, htmlData);
+                if (savedNow) {
+                    log.info(`Successfully extracted post via HTML: ${shortcode}`);
+                } else {
+                    log.debug(`Skipped duplicate (HTML) for ${shortcode}`);
+                }
                 return;
             }
         } catch (e) {
@@ -1114,8 +1191,12 @@ postRouter.addDefaultHandler(async ({ request, response, $, log, crawler, sessio
     }
 
     if (postResult && postResult.data) {
-        await Dataset.pushData(postResult.data);
-        log.info(`Successfully extracted post via GraphQL: ${shortcode}`);
+        const savedNow = await savePostIfNew(username, postResult.data);
+        if (savedNow) {
+            log.info(`Successfully extracted post via GraphQL: ${shortcode}`);
+        } else {
+            log.debug(`Skipped duplicate (GraphQL) for ${shortcode}`);
+        }
         return;
     } else {
         log.warning(`Failed to extract post: ${shortcode}`);
@@ -1162,7 +1243,7 @@ async function fetchPostsBatchGraphQL(shortcodes, username, originalUrl, onlyPos
             'Content-Type': 'application/x-www-form-urlencoded',
             'Cookie': cookieManager.getCookieStringForDomain(cookieSet, 'www.instagram.com'),
             'X-IG-App-ID': '936619743392459',
-            'X-ASBD-ID': '129477',
+            'X-ASBD-ID': (cookieSet?.asbdId || '129477'),
             'X-CSRFToken': cookieSet.cookies?.csrftoken || 'missing',
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -1383,7 +1464,7 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Cookie': cookieManager.getCookieStringForDomain(currentCookieSet, 'www.instagram.com'),
                     'X-IG-App-ID': '936619743392459',
-                    'X-ASBD-ID': '129477',
+                    'X-ASBD-ID': (currentCookieSet?.asbdId || '129477'),
                     'X-CSRFToken': currentCookieSet.cookies.csrftoken || 'missing',
                     'Sec-Fetch-Site': 'same-origin',
                     'Sec-Fetch-Mode': 'cors',
@@ -1450,11 +1531,17 @@ async function fetchPostsBatch(shortcodes, username, originalUrl, onlyPostsNewer
 
                 const jsonResponse = response.data;
                 if (jsonResponse.errors) {
-                    if (attempt < maxRetries) {
-                        log.warning(`Post ${shortcode} GraphQL errors (attempt ${attempt}) - retrying`);
-                        throw new Error(`GraphQL errors - retry needed`);
+                    const candidate = jsonResponse?.data?.xdt_shortcode_media;
+                    if (candidate) {
+                        log.warning(`Post ${shortcode} GraphQL errors present but data exists; proceeding. errors=${JSON.stringify(jsonResponse.errors)}`);
+                        // proceed using candidate
+                    } else {
+                        if (attempt < maxRetries) {
+                            log.warning(`Post ${shortcode} GraphQL errors with no data (attempt ${attempt}) - retrying`);
+                            throw new Error(`GraphQL errors - retry needed`);
+                        }
+                        return { shortcode, error: 'GraphQL errors after retries', data: null };
                     }
-                    return { shortcode, error: 'GraphQL errors after retries', data: null };
                 }
 
                 const post = jsonResponse?.data?.xdt_shortcode_media;

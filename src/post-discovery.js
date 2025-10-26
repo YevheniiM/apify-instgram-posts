@@ -1263,11 +1263,17 @@ async function tryMobileAPIWithPagination(userId, maxPosts, log, session = null,
             if (items.length === 0) {
                 diag.consecutiveEmpty += 1;
                 log.info(`Mobile API batch ${batchCount} returned no posts (empty=${diag.consecutiveEmpty}); will retry after rotation`);
-                if (diag.consecutiveEmpty <= 2) {
-                    // Rotate and retry same cursor a couple of times
+                if (diag.consecutiveEmpty <= 5) {
+                    // Rotate and retry same cursor a few times
                     try { session?.retire?.(); } catch (_) {}
                     await new Promise(r => setTimeout(r, 600 + Math.random()*600));
                     batchCount--;
+                    continue;
+                }
+                // After exceeding tolerance, only stop if there's no indication of more pages
+                const hasNextSignal = !!(data.more_available || data.next_max_id || data.next_cursor);
+                if (hasNextSignal) {
+                    diag.consecutiveEmpty = 0;
                     continue;
                 }
                 break;

@@ -11,5 +11,8 @@
     "input": "./input_schema.json",
     "storages": {
         "dataset": "./dataset_schema.json"
+    },
+    "defaultRunOptions": {
+        "memoryMbytes": 512
     }
 }

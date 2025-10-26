@@ -1,4 +1,4 @@
-import { createCheerioRouter, Dataset } from 'crawlee';
+import { createCheerioRouter, Dataset, RequestQueue } from 'crawlee';
 import { Actor } from 'apify';
 import { discoverPosts } from './post-discovery.js';
 import axios from 'axios';
@@ -385,20 +385,46 @@ profileRouter.addDefaultHandler(async ({ request, response, $, log, crawler, ses
 
 
 
-        // Store discovered post URLs for Phase 2
-        const existingPostUrls = await Actor.getValue('POST_URLS') || [];
-        const mergedPostUrls = [...existingPostUrls, ...postUrls];
-        const byShortcode = new Map();
-        const SHORTCODE_RE = /\/p\/([A-Za-z0-9_-]{5,15})\//;
-        for (const item of mergedPostUrls) {
-            if (!item) continue;
-            const sc = item?.userData?.shortcode || (typeof item?.url === 'string' ? ((item.url.match(SHORTCODE_RE) || [])[1]) : null);
-            if (sc && !byShortcode.has(sc)) byShortcode.set(sc, item);
-        }
-        const uniquePostUrls = Array.from(byShortcode.values());
-        await Actor.setValue('POST_URLS', uniquePostUrls);
+        // Persist discovered shortcodes and enqueue Phase 2 batch jobs directly to RequestQueue
+        const uniqueShortcodes = Array.from(new Set(shortcodes));
+        await Actor.setValue(`DISC_${username}`, uniqueShortcodes);
 
-        log.info(`Phase 1: Discovered ${postUrls.length} post URLs for ${username}`);
+        // Update discovery state for this profile
+        const discoveryState = await Actor.getValue('DISCOVERY_STATE') || {};
+        const diag = (session && session.userData && session.userData.discoveryDiag) ? session.userData.discoveryDiag : {};
+        discoveryState[username] = {
+            discoveredShortcodesCount: uniqueShortcodes.length,
+            cursor: diag.lastCursor || null,
+            completed: true,
+            expectedCount: actualPostCount ?? null,
+            lastUpdated: new Date().toISOString()
+        };
+        await Actor.setValue('DISCOVERY_STATE', discoveryState);
+
+        // Stream to RequestQueue in batches of 25 (use run-scoped queue to avoid cross-run idempotency collisions)
+        const phase2QueueName = `phase-2-${(Actor.getEnv()?.actorRunId || 'local')}`;
+        const requestQueue = await RequestQueue.open(phase2QueueName);
+        const batchSize = 25;
+        let enqueued = 0;
+        for (let i = 0; i < uniqueShortcodes.length; i += batchSize) {
+            const slice = uniqueShortcodes.slice(i, i + batchSize);
+            const batchIndex = Math.floor(i / batchSize);
+            const result = await requestQueue.addRequest({
+                url: `https://www.instagram.com/?batch=${username}-${batchIndex}`,
+                uniqueKey: `batch_posts:${username}:${batchIndex}`,
+                userData: {
+                    type: 'batch_posts',
+                    username,
+                    shortcodes: slice,
+                    originalUrl,
+                    maxPosts: maxPosts || null,
+                    onlyPostsNewerThan: null
+                }
+            });
+            if (!(result?.wasAlreadyPresent || result?.wasAlreadyHandled)) enqueued++;
+        }
+
+        log.info(`Phase 1: Discovered ${uniqueShortcodes.length} shortcodes for ${username}, enqueued ${enqueued} batch requests for Phase 2`);
 
         // Extract profile information from discovered data
         if (shortcodes.length > 0) {
